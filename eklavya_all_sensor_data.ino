@@ -10,6 +10,7 @@
 #include <nav_msgs/Odometry.h>
 #include <IntervalTimer.h>
 #include<util/atomic.h>
+#include <std_msgs/String.h>
 
 // Encoder Connections
 #define ENCA1 2
@@ -20,6 +21,15 @@
 #define ENCB3 17
 #define ENCA4 21
 #define ENCB4 23
+
+#define DIR1 9
+#define PWM1 8
+#define DIR2 7
+#define PWM2 6
+#define DIR3 14
+#define PWM3 15
+#define DIR4 20
+#define PWM4 22
 
 // Global variables for encoder positions
 volatile int posi1 = 0;
@@ -43,6 +53,8 @@ TinyGPSPlus gps;  // Create a GPS object
 // ROS Node Handle
 ros::NodeHandle nh;
 
+void commandCallback(const std_msgs::String& cmd_msg);
+ros::Subscriber<std_msgs::String> sub("robot_command", commandCallback);
 
 
 // Odometry messages for each encoder
@@ -165,6 +177,7 @@ void setup() {
   nh.advertise(odom_pub2);
   nh.advertise(odom_pub3);
   nh.advertise(odom_pub4);
+  nh.subscribe(sub);
   
   // Set encoder pins as inputs
   pinMode(ENCA1, INPUT);
@@ -181,6 +194,18 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENCA2), readEncoder2, RISING);
   attachInterrupt(digitalPinToInterrupt(ENCA3), readEncoder3, RISING);
   attachInterrupt(digitalPinToInterrupt(ENCA4), readEncoder4, RISING);
+
+  pinMode(DIR1, OUTPUT);
+  pinMode(PWM1, OUTPUT);
+  pinMode(DIR2, OUTPUT);
+  pinMode(PWM2, OUTPUT);
+  pinMode(DIR3, OUTPUT);
+  pinMode(PWM3, OUTPUT);
+  pinMode(DIR4, OUTPUT);
+  pinMode(PWM4, OUTPUT);
+  
+  // Initialize all motors to stopped state
+  stopmotors();
 
   // Time tracking
 unsigned long prev_time = 0;
@@ -347,5 +372,93 @@ void readEncoder4() {
   }
   else {
     posi4--;
+  }
+}
+
+
+void moveforward() {
+  digitalWrite(DIR1, HIGH);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, HIGH);
+  analogWrite(PWM1, 255);  // Changed from 1024 to 255
+  analogWrite(PWM2, 0);
+  analogWrite(PWM3, 0);
+  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+}
+
+void moveleft() {
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, HIGH);
+  digitalWrite(DIR3, HIGH);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 0);
+  analogWrite(PWM2, 255);  // Changed from 1024 to 255
+  analogWrite(PWM3, 255);  // Changed from 1024 to 255
+  analogWrite(PWM4, 0);
+}
+
+void movebackward() {
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 255);  // Changed from 1024 to 255
+  analogWrite(PWM2, 0);
+  analogWrite(PWM3, 0);
+  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+}
+
+void moveright() {
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 0);
+  analogWrite(PWM2, 255);  // Changed from 1024 to 255
+  analogWrite(PWM3, 255);  // Changed from 1024 to 255
+  analogWrite(PWM4, 0);
+}
+
+void spinleft() {
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 255);  // Changed from 1024 to 255
+  analogWrite(PWM2, 255);  // Changed from 1024 to 255
+  analogWrite(PWM3, 255);  // Changed from 1024 to 255
+  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+}
+
+void spinright() {
+  digitalWrite(DIR1, HIGH);
+  digitalWrite(DIR2, HIGH);
+  digitalWrite(DIR3, HIGH);
+  digitalWrite(DIR4, HIGH);
+  analogWrite(PWM1, 255);  // Changed from 1024 to 255
+  analogWrite(PWM2, 255);  // Changed from 1024 to 255
+  analogWrite(PWM3, 255);  // Changed from 1024 to 255
+  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+}
+
+void stopmotors() {
+  analogWrite(PWM1, 0);
+  analogWrite(PWM2, 0);
+  analogWrite(PWM3, 0);
+  analogWrite(PWM4, 0);
+}
+
+void commandCallback(const std_msgs::String& cmd_msg) {
+  char command = cmd_msg.data[0];
+  
+  switch(command) {
+    case 'w': case 'W': moveforward(); break;
+    case 's': case 'S': movebackward(); break;
+    case 'a': case 'A': moveleft(); break;
+    case 'd': case 'D': moveright(); break;
+    case 'q': case 'Q': spinleft(); break;
+    case 'e': case 'E': spinright(); break;
+    case 'x': case 'X': default: stopmotors(); break;
   }
 }
