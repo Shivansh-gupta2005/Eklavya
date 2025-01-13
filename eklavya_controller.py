@@ -29,6 +29,8 @@ def robotController():
     d : move right
     q : spin left
     e : spin right
+    g : diagonal forward
+    h : diagonal backward
     x : stop
     
     CTRL-C to quit
@@ -37,7 +39,7 @@ def robotController():
     while not rospy.is_shutdown():
         key = getKey()
         
-        if key in ['w', 'a', 's', 'd', 'q', 'e', 'x']:
+        if key in ['w', 'a', 's', 'd', 'q', 'e', 'g','h','x']:
             cmd = String()
             cmd.data = key
             pub.publish(cmd)
