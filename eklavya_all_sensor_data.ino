@@ -9,6 +9,7 @@
 #include <sensor_msgs/NavSatStatus.h>
 #include <TinyGPS++.h>
 #include <util/atomic.h>
+#include<std_msgs/String.h>
 
 // Motor pins
 #define DIR1 9
@@ -64,7 +65,7 @@ ros::Publisher navsat_pub("navsatfix", &navsat_msg);
 
 // ROS Subscriber for motor commands
 void commandCallback(const std_msgs::String& cmd_msg);
-ros::Subscriber<std_msgs::String> command_sub("robot_command", commandCallback);
+ros::Subscriber<std_msgs::String> sub("robot_command", commandCallback);
 
 // Timer objects
 IntervalTimer encoderTimer;  // Task 1 timer
@@ -171,19 +172,19 @@ void stopmotors() {
 }
 
 void commandCallback(const std_msgs::String& cmd_msg) {
-    char command = cmd_msg.data[0];
-    
-    switch(command) {
-        case 'w': case 'W': moveforward(); break;
-        case 's': case 'S': movebackward(); break;
-        case 'a': case 'A': moveleft(); break;
-        case 'd': case 'D': moveright(); break;
-        case 'q': case 'Q': spinleft(); break;
-        case 'e': case 'E': spinright(); break;
-        case 'g': case 'G': diagonalforward(); break;
-        case 'h': case 'H': diagonalbackward(); break;
-        case 'x': case 'X': default: stopmotors(); break;
-    }
+  char command = cmd_msg.data[0];
+  
+  switch(command) {
+    case 'w': case 'W': moveforward(); break;
+    case 's': case 'S': movebackward(); break;
+    case 'a': case 'A': moveleft(); break;
+    case 'd': case 'D': moveright(); break;
+    case 'q': case 'Q': spinleft(); break;
+    case 'e': case 'E': spinright(); break;
+    case 'g': case 'G': diagonalforward(); break;
+    case 'h': case 'H': diagonalbackward(); break;
+    case 'x': case 'X': default: stopmotors(); break;
+  }
 }
 
 
@@ -228,6 +229,7 @@ void setup() {
 
     // Initialize ROS node and publishers
     nh.initNode();
+    nh.subscribe(sub);
     // Encoder publishers
     nh.advertise(odom_pub1);
     nh.advertise(odom_pub2);
@@ -243,13 +245,17 @@ void setup() {
     // Initialize messages
     initializeOdomMsgs();
 
+    encoderTimer.priority(144);
+    imuTimer.priority(143);
+    gpsTimer.priority(142);
+
     // Start the timers
     // Task 1: Encoder reading (50Hz)
-    if (!encoderTimer.begin(encoderTimerISR, 20000)) {
+    if (!encoderTimer.begin(encoderTimerISR, 250000)) {
         Serial.println("Encoder timer failed!");
     }
     // Task 2: IMU reading (40Hz)
-    if (!imuTimer.begin(readIMUTask, 25000)) {
+    if (!imuTimer.begin(readIMUTask, 500000)) {
         Serial.println("IMU timer failed!");
     }
     // Task 3: GPS reading (10Hz)
@@ -279,6 +285,7 @@ void setupEncoders() {
 
 // Task 1: Encoder Timer ISR
 void encoderTimerISR() {
+    unsigned long encoder1= micros();
     int pos1, pos2, pos3, pos4;
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         pos1 = posi1; pos2 = posi2;
@@ -298,10 +305,18 @@ void encoderTimerISR() {
     odom_pub2.publish(&odom_msg2);
     odom_pub3.publish(&odom_msg3);
     odom_pub4.publish(&odom_msg4);
+
+    unsigned long encoder2=micros();
+
+    unsigned long delay1= encoder2-encoder1;
+    if (delay1>25000){
+      nh.loginfo("overload_encoder");
+    }
 }
 
 // Task 2: IMU Timer ISR
 void readIMUTask() {
+  unsigned long imu1=micros();
     if (mpu.update()) {
         float gyroX = mpu.getGyroX();
         float gyroY = mpu.getGyroY();
@@ -337,10 +352,17 @@ void readIMUTask() {
 
         imu_pub.publish(&imu_msg);
     }
+    unsigned long imu2= micros();
+    unsigned long delay2= imu2-imu1;
+    if(delay2>50000){
+      nh.loginfo("overload_imu");
+    }
 }
 
 // Task 3: GPS Timer ISR
 void readGPSTask() {
+  unsigned long gps1=micros();
+
     while (gpsSerial.available() > 0) {
         gps.encode(gpsSerial.read());
     }
@@ -355,6 +377,12 @@ void readGPSTask() {
         
         navsat_pub.publish(&navsat_msg);
     }
+
+  unsigned long gps2=micros();
+  unsigned long delay3= gps2-gps1;
+  if (delay3>100000){
+    nh.loginfo("overload_gps");
+  }
 }
 void initializeOdomMsgs() {
   // Initialize common fields for all odometry messages
