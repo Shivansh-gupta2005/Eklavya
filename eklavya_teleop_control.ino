@@ -9,13 +9,6 @@
 #define PWM3 15
 #define DIR4 20
 #define PWM4 22
-// Current sensor configuration
-const int currentPin = 41;
-const float vRef = 3.3;    // Teensy 4.1 voltage reference
-const float vcc = 3.3;     // Sensor supply voltage
-const float quiescent = vcc / 2;
-const float sensitivity = 0.04;  // Zero current output voltage
-const int PWM_MAX = 1023;
 
 // ROS setup
 ros::NodeHandle nh;
@@ -35,19 +28,13 @@ void setup() {
   
   // Initialize all motors to stopped state
   stopmotors();
-  // Current sensor setup
-  analogReadResolution(12);
+ 
   
   // ROS initialization
   nh.initNode();
   nh.subscribe(sub);
 }
 
-float readCurrent() {
-  int sensorValue = analogRead(currentPin);
-  float voltage = (sensorValue * vRef) / 4095.0;
-  return (voltage - quiescent) / 0.04; // For 200A version
-}
 
 
 
@@ -56,10 +43,10 @@ void moveforward() {
   digitalWrite(DIR2, LOW);
   digitalWrite(DIR3, LOW);
   digitalWrite(DIR4, HIGH);
-  analogWrite(PWM1, 255);  // Changed from 1024 to 255
+  analogWrite(PWM1, 1023);  
   analogWrite(PWM2, 0);
   analogWrite(PWM3, 0);
-  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+  analogWrite(PWM4, 1023);  
 }
 
 void moveleft() {
@@ -68,8 +55,8 @@ void moveleft() {
   digitalWrite(DIR3, HIGH);
   digitalWrite(DIR4, LOW);
   analogWrite(PWM1, 0);
-  analogWrite(PWM2, 255);  // Changed from 1024 to 255
-  analogWrite(PWM3, 255);  // Changed from 1024 to 255
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
   analogWrite(PWM4, 0);
 }
 
@@ -78,10 +65,10 @@ void movebackward() {
   digitalWrite(DIR2, LOW);
   digitalWrite(DIR3, LOW);
   digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 255);  // Changed from 1024 to 255
+  analogWrite(PWM1, 1023);  
   analogWrite(PWM2, 0);
   analogWrite(PWM3, 0);
-  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+  analogWrite(PWM4, 1023); 
 }
 
 void moveright() {
@@ -90,32 +77,56 @@ void moveright() {
   digitalWrite(DIR3, LOW);
   digitalWrite(DIR4, LOW);
   analogWrite(PWM1, 0);
-  analogWrite(PWM2, 255);  // Changed from 1024 to 255
-  analogWrite(PWM3, 255);  // Changed from 1024 to 255
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
   analogWrite(PWM4, 0);
 }
 
 void spinleft() {
-  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR1, HIGH);
   digitalWrite(DIR2, LOW);
-  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR3, HIGH);
   digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 255);  // Changed from 1024 to 255
-  analogWrite(PWM2, 255);  // Changed from 1024 to 255
-  analogWrite(PWM3, 255);  // Changed from 1024 to 255
-  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+  analogWrite(PWM1, 1023);  
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
 }
 
 void spinright() {
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, HIGH);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, HIGH);
+  analogWrite(PWM1, 1023);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
+}
+
+void diagonalforward(){
   digitalWrite(DIR1, HIGH);
   digitalWrite(DIR2, HIGH);
   digitalWrite(DIR3, HIGH);
   digitalWrite(DIR4, HIGH);
-  analogWrite(PWM1, 255);  // Changed from 1024 to 255
-  analogWrite(PWM2, 255);  // Changed from 1024 to 255
-  analogWrite(PWM3, 255);  // Changed from 1024 to 255
-  analogWrite(PWM4, 255);  // Changed from 1024 to 255
+  analogWrite(PWM1, 1023);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
 }
+
+
+void diagonalbackward() {
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 1023);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
+}
+
 
 void stopmotors() {
   analogWrite(PWM1, 0);
@@ -134,17 +145,14 @@ void commandCallback(const std_msgs::String& cmd_msg) {
     case 'd': case 'D': moveright(); break;
     case 'q': case 'Q': spinleft(); break;
     case 'e': case 'E': spinright(); break;
+    case 'g': case 'G': diagonalforward(); break;
+    case 'h': case 'H': diagonalbackward(); break;
     case 'x': case 'X': default: stopmotors(); break;
   }
 }
 
 void loop() {
-  float current = readCurrent();
-  char current_str[10];
-  dtostrf(current, 4, 2, current_str);
-  char log_msg[20];
-  sprintf(log_msg, "Current: %sA", current_str);
-  nh.loginfo(log_msg);
+
   
   nh.spinOnce();
   delay(100);
