@@ -1,145 +1,212 @@
-#include "MPU9250.h"
+#include <Wire.h>
 
-MPU9250 mpu;
-const uint8_t MPU_ADDRESS = 0x68;
+// MPU9250 I2C address
+#define MPU9250_ADDR 0x68
+#define MAG_ADDR 0x0C
+
+// Calibration variables
+float accel_offset[3] = {0, 0, 0};
+float gyro_offset[3] = {0, 0, 0};
+float mag_offset[3] = {0, 0, 0};
+float mag_scale[3] = {1, 1, 1};
+
+// Sensor data
+float accel[3], gyro[3], mag[3];
+
+// Orientation data
+float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};    // Quaternion
+float euler[3] = {0.0f, 0.0f, 0.0f};       // Roll, pitch, yaw
+unsigned long lastUpdate;
+const float sampleRate = 100.0f;            // Hz
+
+// Function to normalize angles to specified ranges
+float normalizeAngle(float angle, float min_angle, float max_angle) {
+    float range = max_angle - min_angle;
+    float normalized = fmod(angle - min_angle, range);
+    if (normalized < 0) normalized += range;
+    return normalized + min_angle;
+}
+
+void writeByte(uint8_t address, uint8_t reg, uint8_t data) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    Wire.write(data);
+    Wire.endTransmission();
+}
+
+void readBytes(uint8_t address, uint8_t reg, uint8_t count, uint8_t* data) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    Wire.endTransmission(false);
+    Wire.requestFrom(address, count);
+    for(uint8_t i = 0; i < count; i++) {
+        data[i] = Wire.read();
+    }
+}
+
+void initMPU9250() {
+    Wire.begin();
+    delay(100);
+    
+    // Wake up MPU9250
+    writeByte(MPU9250_ADDR, 0x6B, 0x00);
+    delay(100);
+    
+    // Configure accelerometer (±2g)
+    writeByte(MPU9250_ADDR, 0x1C, 0x00);
+    
+    // Configure gyroscope (±250°/s)
+    writeByte(MPU9250_ADDR, 0x1B, 0x00);
+    
+    // Enable bypass mode for magnetometer
+    writeByte(MPU9250_ADDR, 0x37, 0x02);
+    delay(100);
+}
+
+void calibrateSensors() {
+    Serial.println("Starting calibration... Keep sensor still!");
+    delay(2000);
+    
+    float accel_sum[3] = {0}, gyro_sum[3] = {0};
+    float mag_min[3] = {99999, 99999, 99999};
+    float mag_max[3] = {-99999, -99999, -99999};
+    
+    // Collect 1000 samples
+    for(int i = 0; i < 1000; i++) {
+        uint8_t buffer[14];
+        readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
+        
+        // Process accelerometer
+        for(int j = 0; j < 3; j++) {
+            float accel_temp = (float)((int16_t)((buffer[j*2] << 8) | buffer[j*2+1])) / 16384.0f;
+            accel_sum[j] += accel_temp;
+        }
+        
+        // Process gyroscope
+        for(int j = 0; j < 3; j++) {
+            float gyro_temp = (float)((int16_t)((buffer[j*2+8] << 8) | buffer[j*2+9])) / 131.0f;
+            gyro_sum[j] += gyro_temp;
+        }
+        
+        // Read magnetometer
+        uint8_t mag_buffer[7];
+        readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
+        
+        float mag_temp[3];
+        mag_temp[0] = (float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f;
+        mag_temp[1] = (float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f;
+        mag_temp[2] = (float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f;
+        
+        for(int j = 0; j < 3; j++) {
+            mag_min[j] = min(mag_min[j], mag_temp[j]);
+            mag_max[j] = max(mag_max[j], mag_temp[j]);
+        }
+        
+        if(i % 100 == 0) {
+            Serial.print("Calibrating... ");
+            Serial.print(i/10);
+            Serial.println("%");
+        }
+        delay(5);
+    }
+    
+    // Calculate offsets
+    for(int i = 0; i < 3; i++) {
+        accel_offset[i] = accel_sum[i] / 1000.0f;
+        gyro_offset[i] = gyro_sum[i] / 1000.0f;
+        mag_offset[i] = (mag_max[i] + mag_min[i]) / 2.0f;
+        mag_scale[i] = (mag_max[i] - mag_min[i]) / 2.0f;
+    }
+    
+    Serial.println("Calibration complete!");
+    lastUpdate = micros();
+}
+
+void updateSensors() {
+    uint8_t buffer[14];
+    readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
+    
+    // Read accelerometer
+    for(int i = 0; i < 3; i++) {
+        accel[i] = ((float)((int16_t)((buffer[i*2] << 8) | buffer[i*2+1])) / 16384.0f) - accel_offset[i];
+    }
+    
+    // Read gyroscope
+    for(int i = 0; i < 3; i++) {
+        gyro[i] = ((float)((int16_t)((buffer[i*2+8] << 8) | buffer[i*2+9])) / 131.0f) - gyro_offset[i];
+    }
+    
+    // Read magnetometer
+    uint8_t mag_buffer[7];
+    readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
+    
+    mag[0] = ((float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f - mag_offset[0]) / mag_scale[0];
+    mag[1] = ((float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f - mag_offset[1]) / mag_scale[1];
+    mag[2] = ((float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f - mag_offset[2]) / mag_scale[2];
+}
+
+void updateOrientation() {
+    float dt = (float)(micros() - lastUpdate) / 1000000.0f;
+    lastUpdate = micros();
+    
+    // Convert gyro values to rad/sec
+    float gx = gyro[0] * PI / 180.0f;
+    float gy = gyro[1] * PI / 180.0f;
+    float gz = gyro[2] * PI / 180.0f;
+    
+    // Quaternion derivative from gyroscope
+    float qDot[4];
+    qDot[0] = 0.5f * (-q[1]*gx - q[2]*gy - q[3]*gz);
+    qDot[1] = 0.5f * (q[0]*gx + q[2]*gz - q[3]*gy);
+    qDot[2] = 0.5f * (q[0]*gy - q[1]*gz + q[3]*gx);
+    qDot[3] = 0.5f * (q[0]*gz + q[1]*gy - q[2]*gx);
+    
+    // Integrate to get quaternion
+    for(int i = 0; i < 4; i++) {
+        q[i] += qDot[i] * dt;
+    }
+    
+    // Normalize quaternion
+    float norm = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+    for(int i = 0; i < 4; i++) {
+        q[i] /= norm;
+    }
+    
+    // Convert to Euler angles (in degrees)
+    float roll = atan2(2*(q[0]*q[1] + q[2]*q[3]), 1 - 2*(q[1]*q[1] + q[2]*q[2])) * 180.0f/PI;
+    float pitch = asin(2*(q[0]*q[2] - q[3]*q[1])) * 180.0f/PI;
+    float yaw = atan2(2*(q[0]*q[3] + q[1]*q[2]), 1 - 2*(q[2]*q[2] + q[3]*q[3])) * 180.0f/PI;
+    
+    // Normalize angles to proper ranges
+    euler[0] = normalizeAngle(roll, -180.0f, 180.0f);     // Roll: -180 to +180
+    euler[1] = normalizeAngle(pitch, -90.0f, 90.0f);      // Pitch: -90 to +90
+    euler[2] = normalizeAngle(yaw + 180.0f, 0.0f, 360.0f); // Yaw: 0 to 360
+}
 
 void setup() {
     Serial.begin(115200);
-    Wire.begin();
-    delay(2000);
-
-    if (!initializeSensor()) {
-        while (1) {
-            Serial.println("MPU connection failed. Check your connections.");
-            delay(5000);
-        }
-    }
-
-    // Wait for serial command to start calibration
-    Serial.println("\nType 'c' to start calibration");
-    while (!Serial.available() || Serial.read() != 'c') {
-        delay(100);
-    }
-
-    // Full calibration process
-    performFullCalibration();
-}
-
-bool initializeSensor() {
-    MPU9250Setting setting;
-    setting.accel_fs_sel = ACCEL_FS_SEL::A16G;
-    setting.gyro_fs_sel = GYRO_FS_SEL::G2000DPS;
-    setting.mag_output_bits = MAG_OUTPUT_BITS::M16BITS;
-    setting.fifo_sample_rate = FIFO_SAMPLE_RATE::SMPL_200HZ;
-    setting.gyro_fchoice = 0x03;
-    setting.gyro_dlpf_cfg = GYRO_DLPF_CFG::DLPF_41HZ;
-    setting.accel_fchoice = 0x01;
-    setting.accel_dlpf_cfg = ACCEL_DLPF_CFG::DLPF_45HZ;
-
-    return mpu.setup(MPU_ADDRESS, setting);
-}
-
-void performFullCalibration() {
-    // Step 1: Accel/Gyro Calibration
-    calibrateAccelGyro();
+    while(!Serial) delay(10);
     
-    // Step 2: Magnetometer Calibration
-    calibrateMagnetometer();
-    
-    // Print final calibration values
-    printCalibrationValues();
-}
-
-void calibrateAccelGyro() {
-    Serial.println("\n=== Accelerometer and Gyroscope Calibration ===");
-    Serial.println("Place the sensor on a flat, stable surface.");
-    Serial.println("Don't move the sensor until calibration is complete!");
-    Serial.println("Calibration will start in 5 seconds...");
-    
-    for (int i = 5; i > 0; i--) {
-        Serial.print(i); Serial.println(" seconds remaining...");
-        delay(1000);
-    }
-    
-    mpu.calibrateAccelGyro();
-    Serial.println("Accel/Gyro calibration complete!");
-}
-
-void calibrateMagnetometer() {
-    Serial.println("\n=== Magnetometer Calibration ===");
-    Serial.println("Wave the sensor in a figure-8 pattern while rotating it.");
-    Serial.println("Continue this motion for about 30 seconds.");
-    Serial.println("Type 's' when ready to start, 'f' to finish.");
-    
-    // Wait for start command
-    while (!Serial.available() || Serial.read() != 's') {
-        delay(100);
-    }
-
-    float mag_x, mag_y, mag_z;
-    float mag_x_min = 32767, mag_x_max = -32768;
-    float mag_y_min = 32767, mag_y_max = -32768;
-    float mag_z_min = 32767, mag_z_max = -32768;
-    
-    Serial.println("Collecting magnetometer data... Move the sensor!");
-    
-    // Collect data until user sends 'f'
-    while (!Serial.available() || Serial.read() != 'f') {
-        if (mpu.update()) {
-            mag_x = mpu.getMagX();
-            mag_y = mpu.getMagY();
-            mag_z = mpu.getMagZ();
-            
-            // Update min/max values
-            mag_x_min = min(mag_x_min, mag_x);
-            mag_x_max = max(mag_x_max, mag_x);
-            mag_y_min = min(mag_y_min, mag_y);
-            mag_y_max = max(mag_y_max, mag_y);
-            mag_z_min = min(mag_z_min, mag_z);
-            mag_z_max = max(mag_z_max, mag_z);
-            
-            // Print current values
-            Serial.print("Mag X: "); Serial.print(mag_x);
-            Serial.print(" Y: "); Serial.print(mag_y);
-            Serial.print(" Z: "); Serial.println(mag_z);
-            delay(100);
-        }
-    }
-    
-    // Calculate magnetometer bias and scale
-    float mag_bias_x = (mag_x_max + mag_x_min) / 2;
-    float mag_bias_y = (mag_y_max + mag_y_min) / 2;
-    float mag_bias_z = (mag_z_max + mag_z_min) / 2;
-    
-    float mag_scale_x = (mag_x_max - mag_x_min) / 2;
-    float mag_scale_y = (mag_y_max - mag_y_min) / 2;
-    float mag_scale_z = (mag_z_max - mag_z_min) / 2;
-    
-    float avg_scale = (mag_scale_x + mag_scale_y + mag_scale_z) / 3;
-    
-    mpu.setMagBias(mag_bias_x, mag_bias_y, mag_bias_z);
-    mpu.setMagScale(avg_scale/mag_scale_x, avg_scale/mag_scale_y, avg_scale/mag_scale_z);
-}
-
-void printCalibrationValues() {
-    Serial.println("\n=== Calibration Values ===");
-    Serial.println("Copy these values into your main sketch:");
-    Serial.println("\n// Magnetometer Bias");
-    Serial.print("mpu.setMagBias(");
-    Serial.print(mpu.getMagBiasX()); Serial.print(", ");
-    Serial.print(mpu.getMagBiasY()); Serial.print(", ");
-    Serial.print(mpu.getMagBiasZ()); Serial.println(");");
-    
-    Serial.println("\n// Magnetometer Scale");
-    Serial.print("mpu.setMagScale(");
-    Serial.print(mpu.getMagScaleX(), 6); Serial.print(", ");
-    Serial.print(mpu.getMagScaleY(), 6); Serial.print(", ");
-    Serial.print(mpu.getMagScaleZ(), 6); Serial.println(");");
-    
-    Serial.println("\nCalibration complete! Save these values!");
+    Serial.println("Initializing MPU9250...");
+    initMPU9250();
+    calibrateSensors();
 }
 
 void loop() {
-    // Nothing to do in loop for calibration sketch
-    delay(1000);
+    updateSensors();
+    updateOrientation();
+    
+    // Print Euler angles
+    Serial.print("Roll: "); Serial.print(euler[0], 1);
+    Serial.print(" Pitch: "); Serial.print(euler[1], 1);
+    Serial.print(" Yaw: "); Serial.print(euler[2], 1);
+    
+    // Print quaternion
+    Serial.print(" Quaternion: ");
+    Serial.print(q[0], 3); Serial.print(", ");
+    Serial.print(q[1], 3); Serial.print(", ");
+    Serial.print(q[2], 3); Serial.print(", ");
+    Serial.println(q[3], 3);
+    
+    delay(10);  // 100Hz update rate
 }
