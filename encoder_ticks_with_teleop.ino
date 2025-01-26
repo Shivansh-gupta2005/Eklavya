@@ -4,14 +4,14 @@
 #include <TimerOne.h> // Timer library for handling periodic tasks
 
 // Define pins for encoder channels
-#define ENCODER1_PIN_A 2
-#define ENCODER1_PIN_B 3
-#define ENCODER2_PIN_A 4
-#define ENCODER2_PIN_B 5
-#define ENCODER3_PIN_A 16
-#define ENCODER3_PIN_B 17
-#define ENCODER4_PIN_A 21
-#define ENCODER4_PIN_B 23
+#define ENCODER1_PIN_A 21
+#define ENCODER1_PIN_B 23
+#define ENCODER2_PIN_A 2
+#define ENCODER2_PIN_B 3
+#define ENCODER3_PIN_A 4
+#define ENCODER3_PIN_B 5
+#define ENCODER4_PIN_A 16
+#define ENCODER4_PIN_B 17
 
 #define DIR1 9
 #define PWM1 8
@@ -260,13 +260,15 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENCODER3_PIN_A), encoder3ISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENCODER4_PIN_A), encoder4ISR, CHANGE);
 
-  // Initialize the timer to call publishEncoderData every 100ms
-  Timer1.initialize(100000); // 100,000 microseconds = 100ms
-  Timer1.attachInterrupt(publishEncoderData);
+  // // Initialize the timer to call publishEncoderData every 100ms
+  // Timer1.initialize(100000); // 100,000 microseconds = 100ms
+  // Timer1.attachInterrupt(publishEncoderData);
 
   Serial.println("ROSserial encoder node initialized.");
 }
 
 void loop() {
+  publishEncoderData();
   nh.spinOnce(); // Handle ROS communication
+  delay(100);
 }
