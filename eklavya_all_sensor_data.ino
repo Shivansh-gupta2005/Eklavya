@@ -1,15 +1,35 @@
-#include <Arduino.h>
-#include <ros.h>
 #include <Wire.h>
-#include <MPU9250.h>
-#include <Kalman.h>
-#include <nav_msgs/Odometry.h>
+#include <ros.h>
+#include <IntervalTimer.h>
+#include <TinyGPS++.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/NavSatFix.h>
 #include <sensor_msgs/NavSatStatus.h>
-#include <TinyGPS++.h>
-#include <util/atomic.h>
-#include<std_msgs/String.h>
+#include <std_msgs/Int32.h>
+#include <std_msgs/String.h>
+
+
+// Create two interval timers
+IntervalTimer encoderTimer;
+IntervalTimer imuTimer;
+IntervalTimer gpsTimer;
+
+TinyGPSPlus gps;
+#define gpsSerial Serial1
+
+// MPU9250 I2C address
+#define MPU9250_ADDR 0x68
+#define MAG_ADDR 0x0C
+
+// Encoder pins
+#define ENCODER1_PIN_A 21
+#define ENCODER1_PIN_B 23
+#define ENCODER2_PIN_A 2
+#define ENCODER2_PIN_B 3
+#define ENCODER3_PIN_A 4
+#define ENCODER3_PIN_B 5
+#define ENCODER4_PIN_A 16
+#define ENCODER4_PIN_B 17
 
 // Motor pins
 #define DIR1 9
@@ -21,154 +41,379 @@
 #define DIR4 20
 #define PWM4 22
 
-// Encoder Connections (from Task 1)
-#define ENCA1 2
-#define ENCB1 3
-#define ENCA2 4
-#define ENCB2 5
-#define ENCA3 16
-#define ENCB3 17
-#define ENCA4 21
-#define ENCB4 23
+// Global variables for encoders
+volatile int encoder1Ticks = 0;
+volatile int encoder2Ticks = 0;
+volatile int encoder3Ticks = 0;
+volatile int encoder4Ticks = 0;
 
-// Global variables for encoder positions
-volatile int posi1 = 0, posi2 = 0, posi3 = 0, posi4 = 0;
-
-// IMU Setup
-MPU9250 mpu;
-Kalman kalmanYaw, kalmanPitch, kalmanRoll;
-const float Q_angle = 0.001;
-const float Q_bias = 0.003;
-const float R_measure = 0.03;
-float angleYaw, anglePitch, angleRoll;
-
-// GPS Setup
-TinyGPSPlus gps;
-#define gpsSerial Serial1
+// Global variables for IMU
+float accel[3], gyro[3], mag[3];
+float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+float accel_offset[3] = {0, 0, 0};
+float gyro_offset[3] = {0, 0, 0};
+float mag_offset[3] = {0, 0, 0};
+float mag_scale[3] = {1, 1, 1};
+unsigned long lastUpdate;
 
 // ROS node handle
 ros::NodeHandle nh;
 
-// ROS Publishers
-// Encoders (from Task 1)
-nav_msgs::Odometry odom_msg1, odom_msg2, odom_msg3, odom_msg4;
-ros::Publisher odom_pub1("encoder1/odom", &odom_msg1);
-ros::Publisher odom_pub2("encoder2/odom", &odom_msg2);
-ros::Publisher odom_pub3("encoder3/odom", &odom_msg3);
-ros::Publisher odom_pub4("encoder4/odom", &odom_msg4);
-
-// IMU and GPS
-sensor_msgs::Imu imu_msg;
 sensor_msgs::NavSatFix navsat_msg;
-ros::Publisher imu_pub("imu_data", &imu_msg);
 ros::Publisher navsat_pub("navsatfix", &navsat_msg);
 
-// ROS Subscriber for motor commands
+// ROS messages
+sensor_msgs::Imu imu_msg;
+std_msgs::Int32 encoder1_msg;
+std_msgs::Int32 encoder2_msg;
+std_msgs::Int32 encoder3_msg;
+std_msgs::Int32 encoder4_msg;
+
+// ROS publishers
+ros::Publisher imu_pub("imu/data", &imu_msg);
+ros::Publisher encoder1_pub("encoder1", &encoder1_msg);
+ros::Publisher encoder2_pub("encoder2", &encoder2_msg);
+ros::Publisher encoder3_pub("encoder3", &encoder3_msg);
+ros::Publisher encoder4_pub("encoder4", &encoder4_msg);
+
+
 void commandCallback(const std_msgs::String& cmd_msg);
 ros::Subscriber<std_msgs::String> sub("robot_command", commandCallback);
 
-// Timer objects
-IntervalTimer encoderTimer;  // Task 1 timer
-IntervalTimer imuTimer;      // Task 2 timer
-IntervalTimer gpsTimer;      // Task 3 timer
+// Function declarations
+void writeByte(uint8_t address, uint8_t reg, uint8_t data) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    Wire.write(data);
+    Wire.endTransmission();
+}
 
-// Time tracking
-unsigned long prev_time = 0;
+void readBytes(uint8_t address, uint8_t reg, uint8_t count, uint8_t* data) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    Wire.endTransmission(false);
+    Wire.requestFrom(address, count);
+    for(uint8_t i = 0; i < count; i++) {
+        data[i] = Wire.read();
+    }
+}
 
-// Motor control functions
+// Encoder ISR functions
+void encoder1ISR() {
+    int stateA = digitalRead(ENCODER1_PIN_A);
+    int stateB = digitalRead(ENCODER1_PIN_B);
+    if (stateA == stateB) encoder1Ticks++; else encoder1Ticks--;
+}
+
+void encoder2ISR() {
+    int stateA = digitalRead(ENCODER2_PIN_A);
+    int stateB = digitalRead(ENCODER2_PIN_B);
+    if (stateA == stateB) encoder2Ticks++; else encoder2Ticks--;
+}
+
+void encoder3ISR() {
+    int stateA = digitalRead(ENCODER3_PIN_A);
+    int stateB = digitalRead(ENCODER3_PIN_B);
+    if (stateA == stateB) encoder3Ticks++; else encoder3Ticks--;
+}
+
+void encoder4ISR() {
+    int stateA = digitalRead(ENCODER4_PIN_A);
+    int stateB = digitalRead(ENCODER4_PIN_B);
+    if (stateA == stateB) encoder4Ticks++; else encoder4Ticks--;
+}
+
+// Timer callback functions
+void encoderCallback() {
+    encoder1_msg.data = encoder1Ticks;
+    encoder2_msg.data = encoder2Ticks;
+    encoder3_msg.data = encoder3Ticks;
+    encoder4_msg.data = encoder4Ticks;
+    
+    encoder1_pub.publish(&encoder1_msg);
+    encoder2_pub.publish(&encoder2_msg);
+    encoder3_pub.publish(&encoder3_msg);
+    encoder4_pub.publish(&encoder4_msg);
+}  
+
+void imuCallback() {
+    
+    updateSensors();
+    updateOrientation();
+    publishImuData();
+}
+
+void initMPU9250() {
+    Wire.begin();
+    delay(100);
+    
+    // Wake up MPU9250
+    writeByte(MPU9250_ADDR, 0x6B, 0x00);
+    delay(100);
+    
+    // Configure accelerometer (±2g)
+    writeByte(MPU9250_ADDR, 0x1C, 0x00);
+    
+    // Configure gyroscope (±250°/s)
+    writeByte(MPU9250_ADDR, 0x1B, 0x00);
+    
+    // Enable bypass mode for magnetometer
+    writeByte(MPU9250_ADDR, 0x37, 0x02);
+    delay(100);
+}
+
+void calibrateSensors() {
+    nh.loginfo("Starting calibration... Keep sensor still!");
+    delay(2000);
+    
+    float accel_sum[3] = {0}, gyro_sum[3] = {0};
+    float mag_min[3] = {99999, 99999, 99999};
+    float mag_max[3] = {-99999, -99999, -99999};
+    
+    // Collect 1000 samples
+    for(int i = 0; i < 1000; i++) {
+        uint8_t buffer[14];
+        readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
+        
+        // Process accelerometer
+        for(int j = 0; j < 3; j++) {
+            float accel_temp = (float)((int16_t)((buffer[j*2] << 8) | buffer[j*2+1])) / 16384.0f;
+            accel_sum[j] += accel_temp;
+        }
+        
+        // Process gyroscope
+        for(int j = 0; j < 3; j++) {
+            float gyro_temp = (float)((int16_t)((buffer[j*2+8] << 8) | buffer[j*2+9])) / 131.0f;
+            gyro_sum[j] += gyro_temp;
+        }
+        
+        // Read magnetometer
+        uint8_t mag_buffer[7];
+        readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
+        
+        float mag_temp[3];
+        mag_temp[0] = (float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f;
+        mag_temp[1] = (float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f;
+        mag_temp[2] = (float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f;
+        
+        for(int j = 0; j < 3; j++) {
+            mag_min[j] = min(mag_min[j], mag_temp[j]);
+            mag_max[j] = max(mag_max[j], mag_temp[j]);
+        }
+        
+        delay(5);
+    }
+    
+    // Calculate offsets
+    for(int i = 0; i < 3; i++) {
+        accel_offset[i] = accel_sum[i] / 1000.0f;
+        gyro_offset[i] = gyro_sum[i] / 1000.0f;
+        mag_offset[i] = (mag_max[i] + mag_min[i]) / 2.0f;
+        mag_scale[i] = (mag_max[i] - mag_min[i]) / 2.0f;
+    }
+    
+    nh.loginfo("Calibration complete!");
+    lastUpdate = micros();
+}
+
+void updateSensors() {
+    uint8_t buffer[14];
+    readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
+    
+    // Read accelerometer (convert to m/s^2)
+    for(int i = 0; i < 3; i++) {
+        accel[i] = (((float)((int16_t)((buffer[i*2] << 8) | buffer[i*2+1])) / 16384.0f) - accel_offset[i]) * 9.81;
+    }
+    
+    // Read gyroscope (convert to rad/s)
+    for(int i = 0; i < 3; i++) {
+        gyro[i] = (((float)((int16_t)((buffer[i*2+8] << 8) | buffer[i*2+9])) / 131.0f) - gyro_offset[i]) * PI / 180.0f;
+    }
+    
+    // Read magnetometer
+    uint8_t mag_buffer[7];
+    readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
+    
+    mag[0] = ((float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f - mag_offset[0]) / mag_scale[0];
+    mag[1] = ((float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f - mag_offset[1]) / mag_scale[1];
+    mag[2] = ((float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f - mag_offset[2]) / mag_scale[2];
+}
+
+void updateOrientation() {
+    float dt = (float)(micros() - lastUpdate) / 1000000.0f;
+    lastUpdate = micros();
+    
+    // Quaternion derivative from gyroscope
+    float qDot[4];
+    qDot[0] = 0.5f * (-q[1]*gyro[0] - q[2]*gyro[1] - q[3]*gyro[2]);
+    qDot[1] = 0.5f * (q[0]*gyro[0] + q[2]*gyro[2] - q[3]*gyro[1]);
+    qDot[2] = 0.5f * (q[0]*gyro[1] - q[1]*gyro[2] + q[3]*gyro[0]);
+    qDot[3] = 0.5f * (q[0]*gyro[2] + q[1]*gyro[1] - q[2]*gyro[0]);
+    
+    // Integrate to get quaternion
+    for(int i = 0; i < 4; i++) {
+        q[i] += qDot[i] * dt;
+    }
+    
+    // Normalize quaternion
+    float norm = sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+    for(int i = 0; i < 4; i++) {
+        q[i] /= norm;
+    }
+}
+
+void publishImuData() {
+    // Update header
+    imu_msg.header.frame_id = "imu_link";
+    imu_msg.header.stamp = nh.now();
+    
+    // Set orientation quaternion
+    imu_msg.orientation.w = q[0];
+    imu_msg.orientation.x = q[1];
+    imu_msg.orientation.y = q[2];
+    imu_msg.orientation.z = q[3];
+    
+    // Set angular velocity (gyro data)
+    imu_msg.angular_velocity.x = gyro[0];
+    imu_msg.angular_velocity.y = gyro[1];
+    imu_msg.angular_velocity.z = gyro[2];
+    
+    // Set linear acceleration
+    imu_msg.linear_acceleration.x = accel[0];
+    imu_msg.linear_acceleration.y = accel[1];
+    imu_msg.linear_acceleration.z = accel[2];
+    
+    // Set covariance matrices (if unknown, set first element to -1)
+    for(int i = 0; i < 9; i++) {
+        imu_msg.orientation_covariance[i] = 0.0;
+        imu_msg.angular_velocity_covariance[i] = 0.0;
+        imu_msg.linear_acceleration_covariance[i] = 0.0;
+    }
+    // Diagonal elements represent variance
+    imu_msg.orientation_covariance[0] = 0.0025;
+    imu_msg.orientation_covariance[4] = 0.0025;
+    imu_msg.orientation_covariance[8] = 0.0025;
+    
+    imu_msg.angular_velocity_covariance[0] = 0.002;
+    imu_msg.angular_velocity_covariance[4] = 0.002;
+    imu_msg.angular_velocity_covariance[8] = 0.002;
+    
+    imu_msg.linear_acceleration_covariance[0] = 0.04;
+    imu_msg.linear_acceleration_covariance[4] = 0.04;
+    imu_msg.linear_acceleration_covariance[8] = 0.04;
+    
+    // Publish the message
+    imu_pub.publish(&imu_msg);
+}
+
+void publishEncoderData() {
+  // Publish encoder tick counts
+  encoder1_msg.data = encoder1Ticks;
+  encoder2_msg.data = encoder2Ticks;
+  encoder3_msg.data = encoder3Ticks;
+  encoder4_msg.data = encoder4Ticks;
+
+  encoder1_pub.publish(&encoder1_msg);
+  encoder2_pub.publish(&encoder2_msg);
+  encoder3_pub.publish(&encoder3_msg);
+  encoder4_pub.publish(&encoder4_msg);
+}
+
 void moveforward() {
-    digitalWrite(DIR1, HIGH);
-    digitalWrite(DIR2, LOW);
-    digitalWrite(DIR3, LOW);
-    digitalWrite(DIR4, HIGH);
-    analogWrite(PWM1, 1023);
-    analogWrite(PWM2, 0);
-    analogWrite(PWM3, 0);
-    analogWrite(PWM4, 1023);
+  digitalWrite(DIR1, HIGH);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, HIGH);
+  analogWrite(PWM1, 1023);  
+  analogWrite(PWM2, 0);
+  analogWrite(PWM3, 0);
+  analogWrite(PWM4, 1023);  
 }
 
 void moveleft() {
-    digitalWrite(DIR1, LOW);
-    digitalWrite(DIR2, HIGH);
-    digitalWrite(DIR3, HIGH);
-    digitalWrite(DIR4, LOW);
-    analogWrite(PWM1, 0);
-    analogWrite(PWM2, 1023);
-    analogWrite(PWM3, 1023);
-    analogWrite(PWM4, 0);
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, HIGH);
+  digitalWrite(DIR3, HIGH);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 0);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 0);
 }
 
 void movebackward() {
-    digitalWrite(DIR1, LOW);
-    digitalWrite(DIR2, LOW);
-    digitalWrite(DIR3, LOW);
-    digitalWrite(DIR4, LOW);
-    analogWrite(PWM1, 1023);
-    analogWrite(PWM2, 0);
-    analogWrite(PWM3, 0);
-    analogWrite(PWM4, 1023);
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 1023);  
+  analogWrite(PWM2, 0);
+  analogWrite(PWM3, 0);
+  analogWrite(PWM4, 1023); 
 }
 
 void moveright() {
-    digitalWrite(DIR1, LOW);
-    digitalWrite(DIR2, LOW);
-    digitalWrite(DIR3, LOW);
-    digitalWrite(DIR4, LOW);
-    analogWrite(PWM1, 0);
-    analogWrite(PWM2, 1023);
-    analogWrite(PWM3, 1023);
-    analogWrite(PWM4, 0);
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 0);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 0);
 }
 
 void spinleft() {
-    digitalWrite(DIR1, HIGH);
-    digitalWrite(DIR2, LOW);
-    digitalWrite(DIR3, HIGH);
-    digitalWrite(DIR4, LOW);
-    analogWrite(PWM1, 1023);
-    analogWrite(PWM2, 1023);
-    analogWrite(PWM3, 1023);
-    analogWrite(PWM4, 1023);
+  digitalWrite(DIR1, HIGH);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, HIGH);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 1023);  
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
 }
 
 void spinright() {
-    digitalWrite(DIR1, LOW);
-    digitalWrite(DIR2, HIGH);
-    digitalWrite(DIR3, LOW);
-    digitalWrite(DIR4, HIGH);
-    analogWrite(PWM1, 1023);
-    analogWrite(PWM2, 1023);
-    analogWrite(PWM3, 1023);
-    analogWrite(PWM4, 1023);
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, HIGH);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, HIGH);
+  analogWrite(PWM1, 1023);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
 }
 
-void diagonalforward() {
-    digitalWrite(DIR1, HIGH);
-    digitalWrite(DIR2, HIGH);
-    digitalWrite(DIR3, HIGH);
-    digitalWrite(DIR4, HIGH);
-    analogWrite(PWM1, 1023);
-    analogWrite(PWM2, 1023);
-    analogWrite(PWM3, 1023);
-    analogWrite(PWM4, 1023);
+void diagonalforward(){
+  digitalWrite(DIR1, HIGH);
+  digitalWrite(DIR2, HIGH);
+  digitalWrite(DIR3, HIGH);
+  digitalWrite(DIR4, HIGH);
+  analogWrite(PWM1, 1023);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
 }
+
 
 void diagonalbackward() {
-    digitalWrite(DIR1, LOW);
-    digitalWrite(DIR2, LOW);
-    digitalWrite(DIR3, LOW);
-    digitalWrite(DIR4, LOW);
-    analogWrite(PWM1, 1023);
-    analogWrite(PWM2, 1023);
-    analogWrite(PWM3, 1023);
-    analogWrite(PWM4, 1023);
+  digitalWrite(DIR1, LOW);
+  digitalWrite(DIR2, LOW);
+  digitalWrite(DIR3, LOW);
+  digitalWrite(DIR4, LOW);
+  analogWrite(PWM1, 1023);
+  analogWrite(PWM2, 1023);  
+  analogWrite(PWM3, 1023);  
+  analogWrite(PWM4, 1023);  
 }
 
+
 void stopmotors() {
-    analogWrite(PWM1, 0);
-    analogWrite(PWM2, 0);
-    analogWrite(PWM3, 0);
-    analogWrite(PWM4, 0);
+  analogWrite(PWM1, 0);
+  analogWrite(PWM2, 0);
+  analogWrite(PWM3, 0);
+  analogWrite(PWM4, 0);
 }
 
 void commandCallback(const std_msgs::String& cmd_msg) {
@@ -187,298 +432,82 @@ void commandCallback(const std_msgs::String& cmd_msg) {
   }
 }
 
-
-void setup() {
-    // Initialize Serial and wait for connection
-    Serial.begin(115200);
-    while (!Serial);
-
-        // Initialize motor pins
-    pinMode(DIR1, OUTPUT); pinMode(PWM1, OUTPUT);
-    pinMode(DIR2, OUTPUT); pinMode(PWM2, OUTPUT);
-    pinMode(DIR3, OUTPUT); pinMode(PWM3, OUTPUT);
-    pinMode(DIR4, OUTPUT); pinMode(PWM4, OUTPUT);
-    
-    // Stop motors initially
-    stopmotors();
-
-
-    // Initialize I2C and MPU9250
-    Wire.begin();
-    if (!mpu.setup(0x68)) {
-        Serial.println("MPU connection failed!");
-        while (1);
-    }
-
-    // Initialize Kalman filters
-    kalmanYaw.setAngle(0);
-    kalmanPitch.setAngle(0);
-    kalmanRoll.setAngle(0);
-    kalmanYaw.setQangle(Q_angle);
-    kalmanYaw.setQbias(Q_bias);
-    kalmanYaw.setRmeasure(R_measure);
-    kalmanPitch.setQangle(Q_angle);
-    kalmanPitch.setQbias(Q_bias);
-    kalmanPitch.setRmeasure(R_measure);
-    kalmanRoll.setQangle(Q_angle);
-    kalmanRoll.setQbias(Q_bias);
-    kalmanRoll.setRmeasure(R_measure);
-
-    // Initialize GPS Serial
-    gpsSerial.begin(9600);
-
-    // Initialize ROS node and publishers
-    nh.initNode();
-    nh.subscribe(sub);
-    // Encoder publishers
-    nh.advertise(odom_pub1);
-    nh.advertise(odom_pub2);
-    nh.advertise(odom_pub3);
-    nh.advertise(odom_pub4);
-    // IMU and GPS publishers
-    nh.advertise(imu_pub);
-    nh.advertise(navsat_pub);
-
-    // Initialize encoder pins and interrupts
-    setupEncoders();
-    
-    // Initialize messages
-    initializeOdomMsgs();
-
-    encoderTimer.priority(144);
-    imuTimer.priority(143);
-    gpsTimer.priority(142);
-
-    // Start the timers
-    // Task 1: Encoder reading (50Hz)
-    if (!encoderTimer.begin(encoderTimerISR, 250000)) {
-        Serial.println("Encoder timer failed!");
-    }
-    // Task 2: IMU reading (40Hz)
-    if (!imuTimer.begin(readIMUTask, 500000)) {
-        Serial.println("IMU timer failed!");
-    }
-    // Task 3: GPS reading (10Hz)
-    if (!gpsTimer.begin(readGPSTask, 100000)) {
-        Serial.println("GPS timer failed!");
-    }
-}
-
-void loop() {
-    nh.spinOnce();
-}
-
-// [Previous encoder functions remain the same]
-void setupEncoders() {
-    // Set encoder pins as inputs
-    pinMode(ENCA1, INPUT); pinMode(ENCB1, INPUT);
-    pinMode(ENCA2, INPUT); pinMode(ENCB2, INPUT);
-    pinMode(ENCA3, INPUT); pinMode(ENCB3, INPUT);
-    pinMode(ENCA4, INPUT); pinMode(ENCB4, INPUT);
-    
-    // Attach interrupts
-    attachInterrupt(digitalPinToInterrupt(ENCA1), readEncoder1, RISING);
-    attachInterrupt(digitalPinToInterrupt(ENCA2), readEncoder2, RISING);
-    attachInterrupt(digitalPinToInterrupt(ENCA3), readEncoder3, RISING);
-    attachInterrupt(digitalPinToInterrupt(ENCA4), readEncoder4, RISING);
-}
-
-// Task 1: Encoder Timer ISR
-void encoderTimerISR() {
-    unsigned long encoder1= micros();
-    int pos1, pos2, pos3, pos4;
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-        pos1 = posi1; pos2 = posi2;
-        pos3 = posi3; pos4 = posi4;
-    }
-
-    unsigned long current_time = millis();
-    double dt = (current_time - prev_time) / 1000.0;
-    prev_time = current_time;
-
-    updateOdomMsg(odom_msg1, pos1, "encoder1", dt);
-    updateOdomMsg(odom_msg2, pos2, "encoder2", dt);
-    updateOdomMsg(odom_msg3, pos3, "encoder3", dt);
-    updateOdomMsg(odom_msg4, pos4, "encoder4", dt);
-
-    odom_pub1.publish(&odom_msg1);
-    odom_pub2.publish(&odom_msg2);
-    odom_pub3.publish(&odom_msg3);
-    odom_pub4.publish(&odom_msg4);
-
-    unsigned long encoder2=micros();
-
-    unsigned long delay1= encoder2-encoder1;
-    if (delay1>25000){
-      nh.loginfo("overload_encoder");
-    }
-}
-
-// Task 2: IMU Timer ISR
-void readIMUTask() {
-  unsigned long imu1=micros();
-    if (mpu.update()) {
-        float gyroX = mpu.getGyroX();
-        float gyroY = mpu.getGyroY();
-        float gyroZ = mpu.getGyroZ();
-
-        float dt = 0.025;
-        angleYaw = kalmanYaw.getAngle(mpu.getYaw(), gyroX, dt);
-        anglePitch = kalmanPitch.getAngle(mpu.getPitch(), gyroY, dt);
-        angleRoll = kalmanRoll.getAngle(mpu.getRoll(), gyroZ, dt);
-
-        // Convert to quaternion
-        float q[4];
-        float cy = cos(angleYaw * 0.5);
-        float sy = sin(angleYaw * 0.5);
-        float cp = cos(anglePitch * 0.5);
-        float sp = sin(anglePitch * 0.5);
-        float cr = cos(angleRoll * 0.5);
-        float sr = sin(angleRoll * 0.5);
-
-        q[0] = cr * cp * cy + sr * sp * sy;
-        q[1] = sr * cp * cy - cr * sp * sy;
-        q[2] = cr * sp * cy + sr * cp * sy;
-        q[3] = cr * cp * sy - sr * sp * cy;
-
-        imu_msg.header.stamp = nh.now();
-        imu_msg.orientation.x = q[1];
-        imu_msg.orientation.y = q[2];
-        imu_msg.orientation.z = q[3];
-        imu_msg.orientation.w = q[0];
-        imu_msg.angular_velocity.x = gyroX;
-        imu_msg.angular_velocity.y = gyroY;
-        imu_msg.angular_velocity.z = gyroZ;
-
-        imu_pub.publish(&imu_msg);
-    }
-    unsigned long imu2= micros();
-    unsigned long delay2= imu2-imu1;
-    if(delay2>50000){
-      nh.loginfo("overload_imu");
-    }
-}
-
-// Task 3: GPS Timer ISR
-void readGPSTask() {
-  unsigned long gps1=micros();
-
+void gpsCallback() {
     while (gpsSerial.available() > 0) {
-        gps.encode(gpsSerial.read());
+        char c = gpsSerial.read();
+        gps.encode(c);
     }
-
+    
     if (gps.location.isUpdated()) {
+        navsat_msg.header.stamp = nh.now();
+        navsat_msg.header.frame_id = "gps_link";
+        
         navsat_msg.latitude = gps.location.lat();
         navsat_msg.longitude = gps.location.lng();
         navsat_msg.altitude = gps.altitude.meters();
+        
         navsat_msg.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
         navsat_msg.status.status = sensor_msgs::NavSatStatus::STATUS_FIX;
         navsat_msg.status.service = sensor_msgs::NavSatStatus::SERVICE_GPS;
         
         navsat_pub.publish(&navsat_msg);
     }
-
-  unsigned long gps2=micros();
-  unsigned long delay3= gps2-gps1;
-  if (delay3>100000){
-    nh.loginfo("overload_gps");
-  }
 }
-void initializeOdomMsgs() {
-  // Initialize common fields for all odometry messages
-  odom_msg1.header.frame_id = "odom";
-  odom_msg2.header.frame_id = "odom";
-  odom_msg3.header.frame_id = "odom";
-  odom_msg4.header.frame_id = "odom";
 
-  // Initialize child frames
-  odom_msg1.child_frame_id = "encoder1";
-  odom_msg2.child_frame_id = "encoder2";
-  odom_msg3.child_frame_id = "encoder3";
-  odom_msg4.child_frame_id = "encoder4";
-
-  // Initialize covariance matrices (if needed)
-  for(int i = 0; i < 36; i++) {
-    odom_msg1.pose.covariance[i] = 0.0;
-    odom_msg2.pose.covariance[i] = 0.0;
-    odom_msg3.pose.covariance[i] = 0.0;
-    odom_msg4.pose.covariance[i] = 0.0;
+void setup() {
     
-    odom_msg1.twist.covariance[i] = 0.0;
-    odom_msg2.twist.covariance[i] = 0.0;
-    odom_msg3.twist.covariance[i] = 0.0;
-    odom_msg4.twist.covariance[i] = 0.0;
-  }
+    gpsSerial.begin(9600);// Initialize ROS node
+    nh.initNode();
+    
+    // Advertise all topics
+    nh.advertise(imu_pub);
+    nh.advertise(encoder1_pub);
+    nh.advertise(encoder2_pub);
+    nh.advertise(encoder3_pub);
+    nh.advertise(encoder4_pub);
+    nh.advertise(navsat_pub);
+    nh.subscribe(sub);
+    
+    // Configure encoder pins
+    pinMode(ENCODER1_PIN_A, INPUT);
+    pinMode(ENCODER1_PIN_B, INPUT);
+    pinMode(ENCODER2_PIN_A, INPUT);
+    pinMode(ENCODER2_PIN_B, INPUT);
+    pinMode(ENCODER3_PIN_A, INPUT);
+    pinMode(ENCODER3_PIN_B, INPUT);
+    pinMode(ENCODER4_PIN_A, INPUT);
+    pinMode(ENCODER4_PIN_B, INPUT);
+
+
+      pinMode(DIR1, OUTPUT);
+  pinMode(PWM1, OUTPUT);
+  pinMode(DIR2, OUTPUT);
+  pinMode(PWM2, OUTPUT);
+  pinMode(DIR3, OUTPUT);
+  pinMode(PWM3, OUTPUT);
+  pinMode(DIR4, OUTPUT);
+  pinMode(PWM4, OUTPUT);
+      stopmotors();
+
+  // Attach interrupts to encoder pins
+  attachInterrupt(digitalPinToInterrupt(ENCODER1_PIN_A), encoder1ISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER2_PIN_A), encoder2ISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER3_PIN_A), encoder3ISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER4_PIN_A), encoder4ISR, CHANGE);
+    
+    
+    // Initialize IMU
+    initMPU9250();
+    calibrateSensors();
+    lastUpdate = micros();
+    
+    // Start interval timers
+    encoderTimer.begin(encoderCallback, 100000);  // 100ms = 10Hz for encoders
+    imuTimer.begin(imuCallback, 10000);   
+    gpsTimer.begin(gpsCallback, 10);        // 10ms = 100Hz for IMU
 }
 
-void updateOdomMsg(nav_msgs::Odometry &msg, int encoder_ticks, const char* frame_id, double dt) {
-  // Update header
-  msg.header.stamp = nh.now();
-  
-  // Convert encoder ticks to distance (modify these calculations based on your encoder specs)
-  const float TICKS_PER_REV = 1440.0; // Modify based on your encoder
-  const float WHEEL_RADIUS = 0.05;    // Modify based on your wheel radius in meters
-  
-  float distance = (2.0 * PI * WHEEL_RADIUS * encoder_ticks) / TICKS_PER_REV;
-  float velocity = distance / dt;
-
-  // Update position (just using x for linear distance)
-  msg.pose.pose.position.x = distance;
-  msg.pose.pose.position.y = 0.0;
-  msg.pose.pose.position.z = 0.0;
-  
-  // Set orientation to identity quaternion
-  msg.pose.pose.orientation.x = 0.0;
-  msg.pose.pose.orientation.y = 0.0;
-  msg.pose.pose.orientation.z = 0.0;
-  msg.pose.pose.orientation.w = 1.0;
-  
-  // Update velocity
-  msg.twist.twist.linear.x = velocity;
-  msg.twist.twist.linear.y = 0.0;
-  msg.twist.twist.linear.z = 0.0;
-  msg.twist.twist.angular.x = 0.0;
-  msg.twist.twist.angular.y = 0.0;
-  msg.twist.twist.angular.z = 0.0;
-}
-
-// Interrupt functions for encoders
-void readEncoder1() {
-  int b = digitalRead(ENCB1);
-  if(b > 0) {
-    posi1++;
-  }
-  else {
-    posi1--;
-  }
-}
-
-void readEncoder2() {
-  int b = digitalRead(ENCB2);
-  if(b > 0) {
-    posi2++;
-  }
-  else {
-    posi2--;
-  }
-}
-
-void readEncoder3() {
-  int b = digitalRead(ENCB3);
-  if(b > 0) {
-    posi3++;
-  }
-  else {
-    posi3--;
-  }
-}
-
-void readEncoder4() {
-  int b = digitalRead(ENCB4);
-  if(b > 0) {
-    posi4++;
-  }
-  else {
-    posi4--;
-  }
+void loop() {
+    nh.spinOnce();
+     // Give time for other tasks
 }
