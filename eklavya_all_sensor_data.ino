@@ -7,12 +7,15 @@
 #include <sensor_msgs/NavSatStatus.h>
 #include <std_msgs/Int32.h>
 #include <std_msgs/String.h>
+#include <LiquidCrystal_I2C.h>
 
 
 // Create two interval timers
 IntervalTimer encoderTimer;
 IntervalTimer imuTimer;
 IntervalTimer gpsTimer;
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 TinyGPSPlus gps;
 #define gpsSerial Serial1
@@ -455,6 +458,15 @@ void gpsCallback() {
 }
 
 void setup() {
+
+    lcd.init();
+    lcd.backlight();
+    
+    lcd.setCursor(4, 0);
+    lcd.print("Eklavya");
+    
+    lcd.setCursor(0, 1);
+    lcd.print("Robo Club IITK");
     
     gpsSerial.begin(9600);// Initialize ROS node
     nh.initNode();
@@ -479,15 +491,15 @@ void setup() {
     pinMode(ENCODER4_PIN_B, INPUT);
 
 
-      pinMode(DIR1, OUTPUT);
-  pinMode(PWM1, OUTPUT);
-  pinMode(DIR2, OUTPUT);
-  pinMode(PWM2, OUTPUT);
-  pinMode(DIR3, OUTPUT);
-  pinMode(PWM3, OUTPUT);
-  pinMode(DIR4, OUTPUT);
-  pinMode(PWM4, OUTPUT);
-      stopmotors();
+    pinMode(DIR1, OUTPUT);
+    pinMode(PWM1, OUTPUT);
+    pinMode(DIR2, OUTPUT);
+    pinMode(PWM2, OUTPUT);
+    pinMode(DIR3, OUTPUT);
+    pinMode(PWM3, OUTPUT);
+    pinMode(DIR4, OUTPUT);
+    pinMode(PWM4, OUTPUT);
+    stopmotors();
 
   // Attach interrupts to encoder pins
   attachInterrupt(digitalPinToInterrupt(ENCODER1_PIN_A), encoder1ISR, CHANGE);
