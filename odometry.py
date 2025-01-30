@@ -49,7 +49,7 @@ class WheelOdometryPublisher:
         self.previous_time = current_time
 
         if time_delta > 0:
-            velocity = ((self.encoder_ticks - self.previous_ticks) * ticks_to_distance*self.gear_ratio) / time_delta
+            velocity = ((self.encoder_ticks - self.previous_ticks) * ticks_to_distance) / time_delta
         else:
             velocity = 0.0
 
