@@ -35,12 +35,12 @@ TinyGPSPlus gps;
 #define ENCODER4_PIN_B 17
 
 // Motor pins
-#define DIR1 9
-#define PWM1 8
+#define DIR1 14
+#define PWM1 15
 #define DIR2 7
 #define PWM2 6
-#define DIR3 14
-#define PWM3 15
+#define DIR3 9
+#define PWM3 8
 #define DIR4 20
 #define PWM4 22
 
