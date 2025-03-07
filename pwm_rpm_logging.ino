@@ -1,61 +1,79 @@
-const int pwmPin = 9;   // PWM pin for motor control
-const int encA = 2;     // Encoder A pin
-const int encB = 3;     // Encoder B pin
+#include <ros.h>
+#include <std_msgs/Float32MultiArray.h>
 
-volatile long encoderCount = 0;
-unsigned long prevMillis = 0;
+#define ENCODER_PIN_A 4  
+#define ENCODER_PIN_B 5
+#define MOTOR_PWM_PIN 8 
+#define MOTOR_DIR_PIN 9
+
+volatile int encoder_ticks = 0;
 float rpm = 0;
+int pwm_value = 0;
+int max_pwm = 1023;   
+int pwm_step = 5;    
+int delay_time = 500; 
 
-// PWM range
-const int pwmMin = 5;
-const int pwmMax = 655535;
-const int pwmStep = 10;
-const int interval = 100000; // Interval for RPM calculation (ms)
+ros::NodeHandle nh;
+std_msgs::Float32MultiArray motor_data;
+ros::Publisher motor_pub("motor_data", &motor_data);
 
-// Interrupt function for encoder counting
+
 void encoderISR() {
-    if (digitalRead(encA) == digitalRead(encB)) {
-        encoderCount++;
+    if (digitalRead(ENCODER_PIN_A) == digitalRead(ENCODER_PIN_B)) {
+        encoder_ticks++;
     } else {
-        encoderCount--;
+        encoder_ticks--;
     }
+}
+
+
+void calculateRPM() {
+    static unsigned long last_time = 0;
+    unsigned long current_time = millis();
+    float time_difference = (current_time - last_time) / 1000.0; 
+
+    if (time_difference >= 0.1) { 
+        rpm = (encoder_ticks / 400.0) * 60.0; 
+        encoder_ticks = 0;
+        last_time = current_time;
+    }
+}
+
+void setMotorSpeed(int pwm) {
+    pwm_value = constrain(pwm, 0, max_pwm); 
+    digitalWrite(MOTOR_DIR_PIN, HIGH);  
+    analogWrite(MOTOR_PWM_PIN, pwm_value);
 }
 
 void setup() {
-    Serial.begin(115200);
-    pinMode(pwmPin, OUTPUT);
-    pinMode(encA, INPUT_PULLUP);
-    pinMode(encB, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(encA), encoderISR, CHANGE);
+    nh.initNode();
+    nh.advertise(motor_pub);
 
-    // Wait for Python script to start listening
-    while (!Serial) {
-        delay(10);
-    }
+    pinMode(ENCODER_PIN_A, INPUT_PULLUP);
+    pinMode(ENCODER_PIN_B, INPUT_PULLUP);
+    pinMode(MOTOR_PWM_PIN, OUTPUT);
+    pinMode(MOTOR_DIR_PIN, OUTPUT);
 
-    Serial.println("PWM,RPM"); // CSV header
+    attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A), encoderISR, CHANGE);
 }
 
 void loop() {
-    for (int pwm = pwmMin; pwm <= pwmMax; pwm += pwmStep) {
-        analogWrite(pwmPin, pwm);
-        encoderCount = 0;
-        prevMillis = millis();
+    for (pwm_value = 0; pwm_value <= max_pwm; pwm_value += pwm_step) {
+        setMotorSpeed(pwm_value);
+        delay(delay_time);  
+        calculateRPM();    
 
-        while (millis() - prevMillis < interval);
 
-        // Calculate RPM (adjust '20' for your encoder's pulses per revolution)
-        rpm = (encoderCount / 714.0) * 60.0;
+        motor_data.data_length = 2;
+        motor_data.data = (float*)malloc(2 * sizeof(float));
+        motor_data.data[0] = rpm;
+        motor_data.data[1] = pwm_value;
+        motor_pub.publish(&motor_data);
+        free(motor_data.data);
 
-        // Print data in CSV format
-        Serial.print(pwm);
-        Serial.print(",");
-        Serial.println(rpm);
-
-        delay(500); // Small delay before next step
+        nh.spinOnce();
     }
 
-    analogWrite(pwmPin, 0); // Stop motor
-    Serial.println("Done"); // Signal completion
-    while (1); // Halt further execution
+    setMotorSpeed(0);
+    while (true); 
 }
