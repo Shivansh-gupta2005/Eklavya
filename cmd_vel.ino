@@ -98,17 +98,28 @@ ros::Subscriber<geometry_msgs::Twist> cmd_vel_sub("cmd_vel", cmdVelCallback);
 // encoder4_pub.publish(&encoder4_msg);
 // }
 // Convert velocity to PWM using the empirical formula
+// Convert velocity to PWM using the quadratic formula
 int velocityToPWM(float velocity) {
- // Convert from normalized velocity to RPM
-float rpm = velocity/0.076;
- // Use the formula: PWM = (RPM + 3.10) / 0.5119
-int pwm = rpm  RPM_TO_PWM_SLOPE;
- // Ensure minimum PWM to overcome static friction if velocity is non-zero
- // if (velocity != 0 && pwm < 20) {
- // pwm = 20;
- // }
- // Constrain PWM values
-return pwm;
+  // Convert from linear velocity to RPM
+  float rpm = abs(velocity) / (2 * PI * WHEEL_RADIUS) * 60;
+  
+  // Use the quadratic formula: PWM = (-a + sqrt(a² + 4*b*rpm)) / (2*b)
+  const float a = 0.481;              // Linear coefficient
+  const float b = 4.87e-5;            // Quadratic coefficient
+  
+  float discriminant = (a * a) + (4 * b * rpm);
+  float pwm = 0;
+  
+  if (discriminant >= 0) {
+    pwm = (-a + sqrt(discriminant)) / (2 * b);
+  }
+  
+  // Constrain PWM values to valid range
+  pwm = constrain(pwm, 0, MAX_PWM);
+  
+  
+  
+  return (int)pwm;
 }
 // Apply wheel velocities to motors
 void applyWheelVelocities() {
