@@ -67,11 +67,9 @@ void calibrateSensors() {
     Serial.println("Starting calibration... Keep sensor still!");
     delay(2000);
     
-    float accel_sum[3] = {0}, gyro_sum[3] = {0};
-    float mag_min[3] = {99999, 99999, 99999};
-    float mag_max[3] = {-99999, -99999, -99999};
+    // Collect 1000 samples with the sensor in a known orientation
+    float accel_sum[3] = {0};
     
-    // Collect 1000 samples
     for(int i = 0; i < 1000; i++) {
         uint8_t buffer[14];
         readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
@@ -82,45 +80,27 @@ void calibrateSensors() {
             accel_sum[j] += accel_temp;
         }
         
-        // Process gyroscope
-        for(int j = 0; j < 3; j++) {
-            float gyro_temp = (float)((int16_t)((buffer[j*2+8] << 8) | buffer[j*2+9])) / 131.0f;
-            gyro_sum[j] += gyro_temp;
-        }
-        
-        // Read magnetometer
-        uint8_t mag_buffer[7];
-        readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
-        
-        float mag_temp[3];
-        mag_temp[0] = (float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f;
-        mag_temp[1] = (float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f;
-        mag_temp[2] = (float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f;
-        
-        for(int j = 0; j < 3; j++) {
-            mag_min[j] = min(mag_min[j], mag_temp[j]);
-            mag_max[j] = max(mag_max[j], mag_temp[j]);
-        }
-        
-        if(i % 100 == 0) {
-            Serial.print("Calibrating... ");
-            Serial.print(i/10);
-            Serial.println("%");
-        }
         delay(5);
     }
     
-    // Calculate offsets
+    // Calculate offsets assuming the sensor was flat with Z-axis up
     for(int i = 0; i < 3; i++) {
         accel_offset[i] = accel_sum[i] / 1000.0f;
-        gyro_offset[i] = gyro_sum[i] / 1000.0f;
-        mag_offset[i] = (mag_max[i] + mag_min[i]) / 2.0f;
-        mag_scale[i] = (mag_max[i] - mag_min[i]) / 2.0f;
+    }
+    
+    // Adjust Z-axis offset to reflect expected gravity
+    if (accel_offset[2] > 0) {
+        // Sensor was likely flat with Z-axis up
+        accel_offset[2] -= 9.8f; // Adjust for gravity
+    } else {
+        // Sensor might have been inverted
+        accel_offset[2] += 9.8f; // Adjust for inverted gravity
     }
     
     Serial.println("Calibration complete!");
     lastUpdate = micros();
 }
+
 
 void updateSensors() {
     uint8_t buffer[14];
@@ -200,6 +180,8 @@ void loop() {
     Serial.print("Roll: "); Serial.print(euler[0], 1);
     Serial.print(" Pitch: "); Serial.print(euler[1], 1);
     Serial.print(" Yaw: "); Serial.print(euler[2], 1);
+
+    Serial.print("Acceleration in z:"); Serial.print(accel[2]);
     
     // Print quaternion
     Serial.print(" Quaternion: ");
