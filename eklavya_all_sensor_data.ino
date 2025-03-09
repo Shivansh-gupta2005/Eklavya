@@ -461,17 +461,17 @@ void publishImuData() {
         imu_msg.linear_acceleration_covariance[i] = 0.0;
     }
     // Diagonal elements represent variance
-    imu_msg.orientation_covariance[0] = 0.0025;
-    imu_msg.orientation_covariance[4] = 0.0025;
-    imu_msg.orientation_covariance[8] = 0.0025;
+    imu_msg.orientation_covariance[0] = 0.00;
+    imu_msg.orientation_covariance[4] = 0.00;
+    imu_msg.orientation_covariance[8] = 0.00;
     
-    imu_msg.angular_velocity_covariance[0] = 0.002;
-    imu_msg.angular_velocity_covariance[4] = 0.002;
-    imu_msg.angular_velocity_covariance[8] = 0.002;
+    imu_msg.angular_velocity_covariance[0] = 0.01;
+    imu_msg.angular_velocity_covariance[4] = 0.01;
+    imu_msg.angular_velocity_covariance[8] = 0.01;
     
-    imu_msg.linear_acceleration_covariance[0] = 0.04;
-    imu_msg.linear_acceleration_covariance[4] = 0.04;
-    imu_msg.linear_acceleration_covariance[8] = 0.04;
+    imu_msg.linear_acceleration_covariance[0] = 1;
+    imu_msg.linear_acceleration_covariance[4] = 1;
+    imu_msg.linear_acceleration_covariance[8] = 1;
     
     // Publish the message
     imu_pub.publish(&imu_msg);
