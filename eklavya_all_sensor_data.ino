@@ -7,13 +7,19 @@
 #include <sensor_msgs/NavSatStatus.h>
 #include <std_msgs/Int32.h>
 #include <std_msgs/String.h>
+#include <nav_msgs/Odometry.h>
+#include <geometry_msgs/Twist.h>
+#include <geometry_msgs/Quaternion.h>
+#include <geometry_msgs/TransformStamped.h>
+#include <tf/tf.h>
+#include <tf/transform_broadcaster.h>
 #include <LiquidCrystal_I2C.h>
 
-
-// Create two interval timers
+// Create interval timers
 IntervalTimer encoderTimer;
 IntervalTimer imuTimer;
 IntervalTimer gpsTimer;
+IntervalTimer odometryTimer;
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -34,21 +40,33 @@ TinyGPSPlus gps;
 #define ENCODER4_PIN_A 16
 #define ENCODER4_PIN_B 17
 
-// Motor pins
-#define DIR1 14
-#define PWM1 15
+// Motor pins - using pins from the second file
+#define DIR1 9
+#define PWM1 8
 #define DIR2 7
 #define PWM2 6
-#define DIR3 9
-#define PWM3 8
+#define DIR3 14
+#define PWM3 15
 #define DIR4 20
 #define PWM4 22
+
+// Robot parameters
+#define WHEEL_RADIUS 0.076 // meters
+#define ROBOT_RADIUS 0.29  // meters (distance from center to wheel)
+#define MAX_PWM 255
+#define GEAR_RATIO 50.9
+#define ENCODER_PPR 714 // Pulses per revolution
 
 // Global variables for encoders
 volatile int encoder1Ticks = 0;
 volatile int encoder2Ticks = 0;
 volatile int encoder3Ticks = 0;
 volatile int encoder4Ticks = 0;
+
+volatile int prev_encoder1Ticks = 0;
+volatile int prev_encoder2Ticks = 0;
+volatile int prev_encoder3Ticks = 0;
+volatile int prev_encoder4Ticks = 0;
 
 // Global variables for IMU
 float accel[3], gyro[3], mag[3];
@@ -58,6 +76,18 @@ float gyro_offset[3] = {0, 0, 0};
 float mag_offset[3] = {0, 0, 0};
 float mag_scale[3] = {1, 1, 1};
 unsigned long lastUpdate;
+
+// Odometry variables
+float x = 0.0;
+float y = 0.0;
+float theta = 0.0;
+float vx = 0.0;
+float vy = 0.0;
+float vtheta = 0.0;
+unsigned long last_odom_time = 0;
+
+// Wheel velocities
+float v1 = 0, v2 = 0, v3 = 0, v4 = 0; // Individual wheel velocities
 
 // ROS node handle
 ros::NodeHandle nh;
@@ -71,6 +101,7 @@ std_msgs::Int32 encoder1_msg;
 std_msgs::Int32 encoder2_msg;
 std_msgs::Int32 encoder3_msg;
 std_msgs::Int32 encoder4_msg;
+nav_msgs::Odometry odom_msg;
 
 // ROS publishers
 ros::Publisher imu_pub("imu/data", &imu_msg);
@@ -78,10 +109,16 @@ ros::Publisher encoder1_pub("encoder1", &encoder1_msg);
 ros::Publisher encoder2_pub("encoder2", &encoder2_msg);
 ros::Publisher encoder3_pub("encoder3", &encoder3_msg);
 ros::Publisher encoder4_pub("encoder4", &encoder4_msg);
+ros::Publisher odom_pub("odom", &odom_msg);
+
+// TF broadcaster
+tf::TransformBroadcaster tf_broadcaster;
 
 
-void commandCallback(const std_msgs::String& cmd_msg);
-ros::Subscriber<std_msgs::String> sub("robot_command", commandCallback);
+void cmdVelCallback(const geometry_msgs::Twist& twist_msg);
+
+
+ros::Subscriber<geometry_msgs::Twist> twist_sub("cmd_vel", cmdVelCallback);
 
 // Function declarations
 void writeByte(uint8_t address, uint8_t reg, uint8_t data) {
@@ -140,10 +177,105 @@ void encoderCallback() {
 }  
 
 void imuCallback() {
-    
     updateSensors();
     updateOrientation();
     publishImuData();
+}
+
+// New odometry callback
+void odometryCallback() {
+    updateOdometry();
+    publishOdometry();
+}
+
+// Convert encoder ticks to distance
+float ticksToDistance(int ticks) {
+    return (ticks * 2.0 * PI * WHEEL_RADIUS) / (ENCODER_PPR);
+}
+
+void updateOdometry() {
+    unsigned long current_time = millis();
+    float dt = (current_time - last_odom_time) / 1000.0; // Convert to seconds
+    
+    if (dt <= 0) return;
+    
+    last_odom_time = current_time;
+    
+    // Calculate wheel velocities based on encoder changes
+    int delta_ticks1 = encoder1Ticks - prev_encoder1Ticks;
+    int delta_ticks2 = encoder2Ticks - prev_encoder2Ticks;
+    int delta_ticks3 = encoder3Ticks - prev_encoder3Ticks;
+    int delta_ticks4 = encoder4Ticks - prev_encoder4Ticks;
+    
+    prev_encoder1Ticks = encoder1Ticks;
+    prev_encoder2Ticks = encoder2Ticks;
+    prev_encoder3Ticks = encoder3Ticks;
+    prev_encoder4Ticks = encoder4Ticks;
+    
+    float delta_dist1 = ticksToDistance(delta_ticks1);
+    float delta_dist2 = ticksToDistance(delta_ticks2);
+    float delta_dist3 = ticksToDistance(delta_ticks3);
+    float delta_dist4 = ticksToDistance(delta_ticks4);
+    
+    float wheel_v1 = delta_dist1 / dt;
+    float wheel_v2 = delta_dist2 / dt;
+    float wheel_v3 = delta_dist3 / dt;
+    float wheel_v4 = delta_dist4 / dt;
+    
+    // Calculate robot velocities
+    vx = (wheel_v1 + wheel_v3) / 2.0;
+    vy = (wheel_v2 + wheel_v4) / 2.0;
+    vtheta = (-wheel_v1 + wheel_v2 + wheel_v3 - wheel_v4) / (2.0 * ROBOT_RADIUS);
+    
+    // Integrate velocities to update position and orientation in the robot's frame
+    float delta_x = (vx * cos(theta) - vy * sin(theta)) * dt;
+    float delta_y = (vx * sin(theta) + vy * cos(theta)) * dt;
+    float delta_theta = vtheta * dt;
+    
+    x += delta_x;
+    y += delta_y;
+    theta += delta_theta;
+    
+    // Normalize angle to [-pi, pi]
+    while (theta > PI) theta -= 2.0 * PI;
+    while (theta < -PI) theta += 2.0 * PI;
+}
+
+void publishOdometry() {
+    // Create quaternion from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionFromYaw(theta);
+    
+    // Publish transform first
+    geometry_msgs::TransformStamped t;
+    t.header.stamp = nh.now();
+    t.header.frame_id = "odom";
+    t.child_frame_id = "base_link";
+    
+    t.transform.translation.x = x;
+    t.transform.translation.y = y;
+    t.transform.translation.z = 0.0;
+    t.transform.rotation = odom_quat;
+    
+    tf_broadcaster.sendTransform(t);
+    
+    // Publish odometry message
+    odom_msg.header.stamp = nh.now();
+    odom_msg.header.frame_id = "odom";
+    odom_msg.child_frame_id = "base_link";
+    
+    // Set position
+    odom_msg.pose.pose.position.x = x;
+    odom_msg.pose.pose.position.y = y;
+    odom_msg.pose.pose.position.z = 0.0;
+    odom_msg.pose.pose.orientation = odom_quat;
+    
+    // Set velocity
+    odom_msg.twist.twist.linear.x = vx;
+    odom_msg.twist.twist.linear.y = vy;
+    odom_msg.twist.twist.angular.z = vtheta;
+    
+    // Publish odometry
+    odom_pub.publish(&odom_msg);
 }
 
 void initMPU9250() {
@@ -309,132 +441,6 @@ void publishImuData() {
     imu_pub.publish(&imu_msg);
 }
 
-void publishEncoderData() {
-  // Publish encoder tick counts
-  encoder1_msg.data = encoder1Ticks;
-  encoder2_msg.data = encoder2Ticks;
-  encoder3_msg.data = encoder3Ticks;
-  encoder4_msg.data = encoder4Ticks;
-
-  encoder1_pub.publish(&encoder1_msg);
-  encoder2_pub.publish(&encoder2_msg);
-  encoder3_pub.publish(&encoder3_msg);
-  encoder4_pub.publish(&encoder4_msg);
-}
-
-void moveforward() {
-  digitalWrite(DIR1, HIGH);
-  digitalWrite(DIR2, LOW);
-  digitalWrite(DIR3, LOW);
-  digitalWrite(DIR4, HIGH);
-  analogWrite(PWM1, 1023);  
-  analogWrite(PWM2, 0);
-  analogWrite(PWM3, 0);
-  analogWrite(PWM4, 1023);  
-}
-
-void moveleft() {
-  digitalWrite(DIR1, LOW);
-  digitalWrite(DIR2, HIGH);
-  digitalWrite(DIR3, HIGH);
-  digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 0);
-  analogWrite(PWM2, 1023);  
-  analogWrite(PWM3, 1023);  
-  analogWrite(PWM4, 0);
-}
-
-void movebackward() {
-  digitalWrite(DIR1, LOW);
-  digitalWrite(DIR2, LOW);
-  digitalWrite(DIR3, LOW);
-  digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 1023);  
-  analogWrite(PWM2, 0);
-  analogWrite(PWM3, 0);
-  analogWrite(PWM4, 1023); 
-}
-
-void moveright() {
-  digitalWrite(DIR1, LOW);
-  digitalWrite(DIR2, LOW);
-  digitalWrite(DIR3, LOW);
-  digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 0);
-  analogWrite(PWM2, 1023);  
-  analogWrite(PWM3, 1023);  
-  analogWrite(PWM4, 0);
-}
-
-void spinleft() {
-  digitalWrite(DIR1, HIGH);
-  digitalWrite(DIR2, LOW);
-  digitalWrite(DIR3, HIGH);
-  digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 1023);  
-  analogWrite(PWM2, 1023);  
-  analogWrite(PWM3, 1023);  
-  analogWrite(PWM4, 1023);  
-}
-
-void spinright() {
-  digitalWrite(DIR1, LOW);
-  digitalWrite(DIR2, HIGH);
-  digitalWrite(DIR3, LOW);
-  digitalWrite(DIR4, HIGH);
-  analogWrite(PWM1, 1023);
-  analogWrite(PWM2, 1023);  
-  analogWrite(PWM3, 1023);  
-  analogWrite(PWM4, 1023);  
-}
-
-void diagonalforward(){
-  digitalWrite(DIR1, HIGH);
-  digitalWrite(DIR2, HIGH);
-  digitalWrite(DIR3, HIGH);
-  digitalWrite(DIR4, HIGH);
-  analogWrite(PWM1, 1023);
-  analogWrite(PWM2, 1023);  
-  analogWrite(PWM3, 1023);  
-  analogWrite(PWM4, 1023);  
-}
-
-
-void diagonalbackward() {
-  digitalWrite(DIR1, LOW);
-  digitalWrite(DIR2, LOW);
-  digitalWrite(DIR3, LOW);
-  digitalWrite(DIR4, LOW);
-  analogWrite(PWM1, 1023);
-  analogWrite(PWM2, 1023);  
-  analogWrite(PWM3, 1023);  
-  analogWrite(PWM4, 1023);  
-}
-
-
-void stopmotors() {
-  analogWrite(PWM1, 0);
-  analogWrite(PWM2, 0);
-  analogWrite(PWM3, 0);
-  analogWrite(PWM4, 0);
-}
-
-void commandCallback(const std_msgs::String& cmd_msg) {
-  char command = cmd_msg.data[0];
-  
-  switch(command) {
-    case 'w': case 'W': moveforward(); break;
-    case 's': case 'S': movebackward(); break;
-    case 'a': case 'A': moveleft(); break;
-    case 'd': case 'D': moveright(); break;
-    case 'q': case 'Q': spinleft(); break;
-    case 'e': case 'E': spinright(); break;
-    case 'g': case 'G': diagonalforward(); break;
-    case 'h': case 'H': diagonalbackward(); break;
-    case 'x': case 'X': default: stopmotors(); break;
-  }
-}
-
 void gpsCallback() {
     while (gpsSerial.available() > 0) {
         char c = gpsSerial.read();
@@ -457,8 +463,62 @@ void gpsCallback() {
     }
 }
 
-void setup() {
+// Convert velocity to PWM using the quadratic formula
+int velocityToPWM(float velocity) {
+  // Convert from linear velocity to RPM
+  float rpm = abs(velocity) / (2 * PI * WHEEL_RADIUS) * 60;
+  
+  // Use the quadratic formula: PWM = (-a + sqrt(a² + 4*b*rpm)) / (2*b)
+  const float a = 0.481;              // Linear coefficient
+  const float b = 4.87e-5;            // Quadratic coefficient
+  
+  float discriminant = (a * a) + (4 * b * rpm);
+  float pwm = 0;
+  
+  if (discriminant >= 0) {
+    pwm = (-a + sqrt(discriminant)) / (2 * b);
+  }
+  
+  // Constrain PWM values to valid range
+  pwm = constrain(pwm, 0, MAX_PWM);
+  
+  return (int)pwm;
+}
 
+
+void cmdVelCallback(const geometry_msgs::Twist& twist_msg) {
+  // Extract linear and angular velocities
+  float linear_x = twist_msg.linear.x;
+  float linear_y = twist_msg.linear.y;
+  float angular_z = twist_msg.angular.z;
+  
+  // Calculate wheel velocities using mecanum wheel kinematics
+  v1 = linear_x - angular_z * ROBOT_RADIUS; // Front Left
+  v2 = linear_y + angular_z * ROBOT_RADIUS; // Front Right
+  v3 = linear_x - angular_z * ROBOT_RADIUS; // Rear Left
+  v4 = - linear_y + angular_z * ROBOT_RADIUS; // Rear Right
+  
+  // Convert velocity to PWM values
+  int pwm1 = velocityToPWM(v1);
+  int pwm2 = velocityToPWM(v2);
+  int pwm3 = velocityToPWM(v3);
+  int pwm4 = velocityToPWM(v4);
+  
+  // Set motor directions
+  digitalWrite(DIR1, v1 >= 0 ? HIGH : LOW);
+  digitalWrite(DIR2, v2 >= 0 ? HIGH : LOW);
+  digitalWrite(DIR3, v3 >= 0 ? HIGH : LOW);
+  digitalWrite(DIR4, v4 >= 0 ? HIGH : LOW);
+  
+  // Apply PWM values to motors
+  analogWrite(PWM1, pwm1);
+  analogWrite(PWM2, pwm2);
+  analogWrite(PWM3, pwm3);
+  analogWrite(PWM4, pwm4);
+}
+
+void setup() {
+    // Initialize LCD
     lcd.init();
     lcd.backlight();
     
@@ -468,7 +528,11 @@ void setup() {
     lcd.setCursor(0, 1);
     lcd.print("Robo Club IITK");
     
-    gpsSerial.begin(9600);// Initialize ROS node
+    // Initialize serial
+    Serial.begin(9600);
+    gpsSerial.begin(9600);
+    
+    // Initialize ROS node
     nh.initNode();
     
     // Advertise all topics
@@ -478,7 +542,13 @@ void setup() {
     nh.advertise(encoder3_pub);
     nh.advertise(encoder4_pub);
     nh.advertise(navsat_pub);
-    nh.subscribe(sub);
+    nh.advertise(odom_pub);
+    
+
+    nh.subscribe(twist_sub);
+    
+    // Initialize TF broadcaster
+    tf_broadcaster.init(nh);
     
     // Configure encoder pins
     pinMode(ENCODER1_PIN_A, INPUT);
@@ -490,7 +560,7 @@ void setup() {
     pinMode(ENCODER4_PIN_A, INPUT);
     pinMode(ENCODER4_PIN_B, INPUT);
 
-
+    // Configure motor pins
     pinMode(DIR1, OUTPUT);
     pinMode(PWM1, OUTPUT);
     pinMode(DIR2, OUTPUT);
@@ -499,22 +569,20 @@ void setup() {
     pinMode(PWM3, OUTPUT);
     pinMode(DIR4, OUTPUT);
     pinMode(PWM4, OUTPUT);
-    stopmotors();
-
-  // Attach interrupts to encoder pins
-  attachInterrupt(digitalPinToInterrupt(ENCODER1_PIN_A), encoder1ISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER2_PIN_A), encoder2ISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER3_PIN_A), encoder3ISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER4_PIN_A), encoder4ISR, CHANGE);
     
+
+    // Attach interrupts to encoder pins
+    attachInterrupt(digitalPinToInterrupt(ENCODER1_PIN_A), encoder1ISR, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENCODER2_PIN_A), encoder2ISR, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENCODER3_PIN_A), encoder3ISR, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENCODER4_PIN_A), encoder4ISR, CHANGE);
     
     // Initialize IMU
     initMPU9250();
     calibrateSensors();
     lastUpdate = micros();
     
-    // Start interval timers
-    encoderTimer.begin(encoderCallback, 100000);  // 100ms = 10Hz for encoders
+       encoderTimer.begin(encoderCallback, 100000);  // 100ms = 10Hz for encoders
     imuTimer.begin(imuCallback, 10000);   
     gpsTimer.begin(gpsCallback, 10);        // 10ms = 100Hz for IMU
 }
