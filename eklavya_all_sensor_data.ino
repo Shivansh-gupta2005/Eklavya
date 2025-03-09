@@ -298,31 +298,34 @@ void initMPU9250() {
 }
 
 void calibrateSensors() {
-    nh.loginfo("Starting calibration... Keep sensor still!");
+    nh.loginfo("Starting calibration... Keep sensor still and level!");
     delay(2000);
     
-    float accel_sum[3] = {0}, gyro_sum[3] = {0};
-    float mag_min[3] = {99999, 99999, 99999};
-    float mag_max[3] = {-99999, -99999, -99999};
+    // Collect samples for calibration
+    const int numSamples = 1000;
+    float accel_sum[3] = {0};
+    float gyro_sum[3] = {0};
+    float mag_sum[3] = {0};
     
-    // Collect 1000 samples
-    for(int i = 0; i < 1000; i++) {
+    for(int i = 0; i < numSamples; i++) {
         uint8_t buffer[14];
         readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
         
         // Process accelerometer
+        float accel_temp[3];
         for(int j = 0; j < 3; j++) {
-            float accel_temp = (float)((int16_t)((buffer[j*2] << 8) | buffer[j*2+1])) / 16384.0f;
-            accel_sum[j] += accel_temp;
+            accel_temp[j] = (float)((int16_t)((buffer[j*2] << 8) | buffer[j*2+1])) / 16384.0f;
+            accel_sum[j] += accel_temp[j];
         }
         
         // Process gyroscope
+        float gyro_temp[3];
         for(int j = 0; j < 3; j++) {
-            float gyro_temp = (float)((int16_t)((buffer[j*2+8] << 8) | buffer[j*2+9])) / 131.0f;
-            gyro_sum[j] += gyro_temp;
+            gyro_temp[j] = (float)((int16_t)((buffer[j*2+8] << 8) | buffer[j*2+9])) / 131.0f;
+            gyro_sum[j] += gyro_temp[j];
         }
         
-        // Read magnetometer
+        // Process magnetometer (if needed)
         uint8_t mag_buffer[7];
         readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
         
@@ -332,20 +335,45 @@ void calibrateSensors() {
         mag_temp[2] = (float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f;
         
         for(int j = 0; j < 3; j++) {
-            mag_min[j] = min(mag_min[j], mag_temp[j]);
-            mag_max[j] = max(mag_max[j], mag_temp[j]);
+            mag_sum[j] += mag_temp[j];
         }
         
         delay(5);
     }
     
-    // Calculate offsets
+    // Calculate accelerometer offsets
+    accel_offset[0] = accel_sum[0] / numSamples;  // X should be 0
+    accel_offset[1] = accel_sum[1] / numSamples;  // Y should be 0
+    accel_offset[2] = accel_sum[2] / numSamples - 1.0f;  // Z should be 1.0 (normalized gravity)
+    
+    // Calculate gyroscope offsets
     for(int i = 0; i < 3; i++) {
-        accel_offset[i] = accel_sum[i] / 1000.0f;
-        gyro_offset[i] = gyro_sum[i] / 1000.0f;
-        mag_offset[i] = (mag_max[i] + mag_min[i]) / 2.0f;
-        mag_scale[i] = (mag_max[i] - mag_min[i]) / 2.0f;
+        gyro_offset[i] = gyro_sum[i] / numSamples;  // All should be 0
     }
+    
+    // Calculate magnetometer offsets
+    for(int i = 0; i < 3; i++) {
+        mag_offset[i] = mag_sum[i] / numSamples;
+    }
+    
+    // Initialize and capture orientation offset
+    updateSensors();
+    updateQuaternion();
+    
+    // Store the inverse of the initial orientation as the offset
+    q_offset[0] = q[0];
+    q_offset[1] = -q[1];
+    q_offset[2] = -q[2];
+    q_offset[3] = -q[3];
+    
+    // Log offset information
+    char buffer[50];
+    
+    sprintf(buffer, "Accel offsets: %.3f, %.3f, %.3f", accel_offset[0], accel_offset[1], accel_offset[2]);
+    nh.loginfo(buffer);
+    
+    sprintf(buffer, "Gyro offsets: %.3f, %.3f, %.3f", gyro_offset[0], gyro_offset[1], gyro_offset[2]);
+    nh.loginfo(buffer);
     
     nh.loginfo("Calibration complete!");
     lastUpdate = micros();
@@ -355,26 +383,23 @@ void updateSensors() {
     uint8_t buffer[14];
     readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
     
-    // Read accelerometer (convert to m/s^2)
+    // Read accelerometer (apply calibration)
     for(int i = 0; i < 3; i++) {
-        accel[i] = (((float)((int16_t)((buffer[i*2] << 8) | buffer[i*2+1])) / 16384.0f) - accel_offset[i]) * 9.81;
+        accel[i] = ((float)((int16_t)((buffer[i*2] << 8) | buffer[i*2+1])) / 16384.0f) - accel_offset[i];
     }
     
-    // Read gyroscope (convert to rad/s)
+    // Read gyroscope (apply calibration)
     for(int i = 0; i < 3; i++) {
-        gyro[i] = (((float)((int16_t)((buffer[i*2+8] << 8) | buffer[i*2+9])) / 131.0f) - gyro_offset[i]) * PI / 180.0f;
+        gyro[i] = ((float)((int16_t)((buffer[i*2+8] << 8) | buffer[i*2+9])) / 131.0f) - gyro_offset[i];
     }
     
-    // Read magnetometer
-    uint8_t mag_buffer[7];
-    readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
-    
-    mag[0] = ((float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f - mag_offset[0]) / mag_scale[0];
-    mag[1] = ((float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f - mag_offset[1]) / mag_scale[1];
-    mag[2] = ((float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f - mag_offset[2]) / mag_scale[2];
+    // Convert gyro values from degrees/sec to radians/sec for quaternion update
+    for(int i = 0; i < 3; i++) {
+        gyro[i] = gyro[i] * (PI / 180.0f);
+    }
 }
 
-void updateOrientation() {
+void updateQuaternion() {
     float dt = (float)(micros() - lastUpdate) / 1000000.0f;
     lastUpdate = micros();
     
@@ -395,6 +420,17 @@ void updateOrientation() {
     for(int i = 0; i < 4; i++) {
         q[i] /= norm;
     }
+    
+    // Apply calibration offset to quaternion (quaternion multiplication)
+    // q_calibrated = q_offset * q
+    q_calibrated[0] = q_offset[0]*q[0] - q_offset[1]*q[1] - q_offset[2]*q[2] - q_offset[3]*q[3];
+    q_calibrated[1] = q_offset[0]*q[1] + q_offset[1]*q[0] + q_offset[2]*q[3] - q_offset[3]*q[2];
+    q_calibrated[2] = q_offset[0]*q[2] - q_offset[1]*q[3] + q_offset[2]*q[0] + q_offset[3]*q[1];
+    q_calibrated[3] = q_offset[0]*q[3] + q_offset[1]*q[2] - q_offset[2]*q[1] + q_offset[3]*q[0];
+}
+
+void updateOrientation() {
+    updateQuaternion();
 }
 
 void publishImuData() {
@@ -402,21 +438,21 @@ void publishImuData() {
     imu_msg.header.frame_id = "imu_link";
     imu_msg.header.stamp = nh.now();
     
-    // Set orientation quaternion
-    imu_msg.orientation.w = q[0];
-    imu_msg.orientation.x = q[1];
-    imu_msg.orientation.y = q[2];
-    imu_msg.orientation.z = q[3];
+    // Set orientation quaternion (using the calibrated quaternion)
+    imu_msg.orientation.w = q_calibrated[0];
+    imu_msg.orientation.x = q_calibrated[1];
+    imu_msg.orientation.y = q_calibrated[2];
+    imu_msg.orientation.z = q_calibrated[3];
     
-    // Set angular velocity (gyro data)
+    // Set angular velocity (gyro data in rad/s)
     imu_msg.angular_velocity.x = gyro[0];
     imu_msg.angular_velocity.y = gyro[1];
     imu_msg.angular_velocity.z = gyro[2];
     
-    // Set linear acceleration
-    imu_msg.linear_acceleration.x = accel[0];
-    imu_msg.linear_acceleration.y = accel[1];
-    imu_msg.linear_acceleration.z = accel[2];
+    // Set linear acceleration in m/s²
+    imu_msg.linear_acceleration.x = accel[0] * 9.8f;
+    imu_msg.linear_acceleration.y = accel[1] * 9.8f;
+    imu_msg.linear_acceleration.z = accel[2] * 9.8f;
     
     // Set covariance matrices (if unknown, set first element to -1)
     for(int i = 0; i < 9; i++) {
@@ -440,7 +476,6 @@ void publishImuData() {
     // Publish the message
     imu_pub.publish(&imu_msg);
 }
-
 void gpsCallback() {
     while (gpsSerial.available() > 0) {
         char c = gpsSerial.read();
