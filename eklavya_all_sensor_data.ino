@@ -68,14 +68,24 @@ volatile int prev_encoder2Ticks = 0;
 volatile int prev_encoder3Ticks = 0;
 volatile int prev_encoder4Ticks = 0;
 
-// Global variables for IMU
-float accel[3], gyro[3], mag[3];
-float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};
 float accel_offset[3] = {0, 0, 0};
 float gyro_offset[3] = {0, 0, 0};
 float mag_offset[3] = {0, 0, 0};
 float mag_scale[3] = {1, 1, 1};
+
+// Orientation offset for zeroing
+float q_offset[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+
+// Sensor data
+float accel[3], gyro[3], mag[3];
+
+// Orientation data
+float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};    // Quaternion
+float q_calibrated[4] = {1.0f, 0.0f, 0.0f, 0.0f}; // Calibrated quaternion
 unsigned long lastUpdate;
+const float sampleRate = 100.0f;            // Hz
+
+
 
 // Odometry variables
 float x = 0.0;
@@ -120,7 +130,6 @@ void cmdVelCallback(const geometry_msgs::Twist& twist_msg);
 
 ros::Subscriber<geometry_msgs::Twist> twist_sub("cmd_vel", cmdVelCallback);
 
-// Function declarations
 void writeByte(uint8_t address, uint8_t reg, uint8_t data) {
     Wire.beginTransmission(address);
     Wire.write(reg);
