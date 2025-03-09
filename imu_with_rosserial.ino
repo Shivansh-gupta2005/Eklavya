@@ -69,23 +69,17 @@ void updateSensors() {
     uint8_t buffer[14];
     readBytes(MPU9250_ADDR, 0x3B, 14, buffer);
     
-    // Read accelerometer (convert to m/s^2)
+    // Read accelerometer
     for(int i = 0; i < 3; i++) {
-        accel[i] = (((float)((int16_t)((buffer[i*2] << 8) | buffer[i*2+1])) / 16384.0f) - accel_offset[i]) * 9.81;
+        accel[i] = ((float)((int16_t)((buffer[i*2] << 8) | buffer[i*2+1])) / 16384.0f) - accel_offset[i];
     }
     
-    // Read gyroscope (convert to rad/s)
-    for(int i = 0; i < 3; i++) {
-        gyro[i] = (((float)((int16_t)((buffer[i*2+8] << 8) | buffer[i*2+9])) / 131.0f) - gyro_offset[i]) * PI / 180.0f;
+    // If Z-axis points up, adjust for gravity
+    if (accel[2] < 0) {
+        Serial.print("Acceleration in z (with gravity):"); Serial.print(accel[2]);
+    } else {
+        Serial.print("Acceleration in z (with gravity):"); Serial.print(accel[2] - 1.0f); // Assuming 1g = 9.8 m/s^2
     }
-    
-    // Read magnetometer
-    uint8_t mag_buffer[7];
-    readBytes(MAG_ADDR, 0x03, 7, mag_buffer);
-    
-    mag[0] = ((float)((int16_t)(mag_buffer[1] << 8 | mag_buffer[0])) * 0.15f - mag_offset[0]) / mag_scale[0];
-    mag[1] = ((float)((int16_t)(mag_buffer[3] << 8 | mag_buffer[2])) * 0.15f - mag_offset[1]) / mag_scale[1];
-    mag[2] = ((float)((int16_t)(mag_buffer[5] << 8 | mag_buffer[4])) * 0.15f - mag_offset[2]) / mag_scale[2];
 }
 void calibrateSensors() {
     Serial.println("Starting calibration... Keep sensor still!");
