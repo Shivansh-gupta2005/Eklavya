@@ -5,174 +5,118 @@ from geometry_msgs.msg import Twist
 import sys
 import termios
 import tty
-import threading
+import signal
 import time
 
-class TerminalTeleop:
-    def __init__(self):
-        # Initialize ROS node
-        rospy.init_node('terminal_teleop')
-        
-        # Publisher for cmd_vel
-        self.pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
-        
-        # Initial speeds
-        self.linear_speed = 0.1  # m/s
-        self.angular_speed = 0.5  # rad/s
-        self.linear_increment = 0.05
-        self.angular_increment = 0.1
-        
-        # Max speeds
-        self.max_linear_speed = 0.5
-        self.max_angular_speed = 1.0
-        
-        # Current movement command
-        self.twist = Twist()
-        self.running = True
-        
-        # Instructions for the user
-        self.instructions = """
-Terminal Teleop Control
------------------------
-Movement Controls:
-  w: forward     s: backward
-  a: left        d: right
-  q: rotate left e: rotate right
-  x: stop
+# Terminal input settings
+def getKey():
+    settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        key = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    return key
 
-Speed Controls:
-  i: increase linear speed   k: decrease linear speed
-  o: increase angular speed  l: decrease angular speed
-  
-Other:
-  Ctrl+C: quit
-  
+# Velocity settings
+linear_x_speed = 0.0  # m/s
+linear_y_speed = 0.0  # m/s
+angular_z_speed = 0.0 # rad/s
+speed_increment = 0.1
+
+# Print control instructions
+def print_instructions():
+    msg = """
+Omni Robot Teleop Control
+
+Motion Controls:
+    w/s: Increase/decrease linear X (forward/backward)
+    a/d: Increase/decrease linear Y (left/right)
+    q/e: Increase/decrease angular Z (rotation)
+
+Other Controls:
+    space: Stop
+    i: Print current settings
+    CTRL+C: Quit
+    
 Current Settings:
-  Linear Speed: {:.2f} m/s (max: {:.2f})
-  Angular Speed: {:.2f} rad/s (max: {:.2f})
-"""
+    Linear X Speed: {:.2f} m/s
+    Linear Y Speed: {:.2f} m/s
+    Angular Z Speed: {:.2f} rad/s
+    """.format(linear_x_speed, linear_y_speed, angular_z_speed)
+    print(msg)
 
-        # Start publishing thread
-        self.pub_thread = threading.Thread(target=self.publish_twist)
-        self.pub_thread.daemon = True
-        self.pub_thread.start()
+# Main function
+def teleop():
+    global linear_x_speed, linear_y_speed, angular_z_speed
+    
+    # Initialize ROS node
+    rospy.init_node('teleop')
+    pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
+    rate = rospy.Rate(10)  # 10 Hz
+    
+    # Initialize Twist message
+    twist = Twist()
+    
+    # Handle CTRL+C gracefully
+    def signal_handler(sig, frame):
+        twist = Twist()  # Zero velocity
+        pub.publish(twist)
+        print("\nExiting...")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    print_instructions()
+    
+    while not rospy.is_shutdown():
+        key = getKey()
         
-        # Print instructions
-        self.print_instructions()
-
-    def publish_twist(self):
-        """Thread function that publishes twist messages at a fixed rate"""
-        rate = rospy.Rate(10)  # 10Hz
-        while not rospy.is_shutdown() and self.running:
-            self.pub.publish(self.twist)
-            rate.sleep()
-
-    def print_instructions(self):
-        """Print control instructions with current settings"""
-        print(self.instructions.format(
-            self.linear_speed, self.max_linear_speed,
-            self.angular_speed, self.max_angular_speed
-        ))
-
-    def process_key(self, key):
-        """Process a keypress and update the twist message accordingly"""
-        if key == 'w':
-            # Forward
-            self.twist.linear.x = self.linear_speed
-            self.twist.linear.y = 0
-            self.twist.angular.z = 0
-            return "Moving forward"
-        elif key == 's':
-            # Backward
-            self.twist.linear.x = -self.linear_speed
-            self.twist.linear.y = 0
-            self.twist.angular.z = 0
-            return "Moving backward"
-        elif key == 'a':
-            # Left (strafe)
-            self.twist.linear.x = 0
-            self.twist.linear.y = self.linear_speed
-            self.twist.angular.z = 0
-            return "Moving left"
-        elif key == 'd':
-            # Right (strafe)
-            self.twist.linear.x = 0
-            self.twist.linear.y = -self.linear_speed
-            self.twist.angular.z = 0
-            return "Moving right"
-        elif key == 'q':
-            # Rotate left
-            self.twist.linear.x = 0
-            self.twist.linear.y = 0
-            self.twist.angular.z = self.angular_speed
-            return "Rotating left"
-        elif key == 'e':
-            # Rotate right
-            self.twist.linear.x = 0
-            self.twist.linear.y = 0
-            self.twist.angular.z = -self.angular_speed
-            return "Rotating right"
-        elif key == 'x':
-            # Stop
-            self.twist.linear.x = 0
-            self.twist.linear.y = 0
-            self.twist.angular.z = 0
-            return "Stopped"
-        elif key == 'i':
-            # Increase linear speed
-            self.linear_speed = min(self.linear_speed + self.linear_increment, self.max_linear_speed)
-            return f"Linear speed increased to {self.linear_speed:.2f} m/s"
-        elif key == 'k':
-            # Decrease linear speed
-            self.linear_speed = max(self.linear_speed - self.linear_increment, 0)
-            return f"Linear speed decreased to {self.linear_speed:.2f} m/s"
-        elif key == 'o':
-            # Increase angular speed
-            self.angular_speed = min(self.angular_speed + self.angular_increment, self.max_angular_speed)
-            return f"Angular speed increased to {self.angular_speed:.2f} rad/s"
-        elif key == 'l':
-            # Decrease angular speed
-            self.angular_speed = max(self.angular_speed - self.angular_increment, 0)
-            return f"Angular speed decreased to {self.angular_speed:.2f} rad/s"
+        # Process key input for direct control of twist values
+        if key == 'w':  # Increase linear X
+            linear_x_speed += speed_increment
+            print("Linear X speed: {:.2f} m/s".format(linear_x_speed))
+            twist.linear.x = linear_x_speed
+        elif key == 's':  # Decrease linear X
+            linear_x_speed -= speed_increment
+            print("Linear X speed: {:.2f} m/s".format(linear_x_speed))
+            twist.linear.x = linear_x_speed
+        elif key == 'a':  # Increase linear Y
+            linear_y_speed += speed_increment
+            print("Linear Y speed: {:.2f} m/s".format(linear_y_speed))
+            twist.linear.y = linear_y_speed
+        elif key == 'd':  # Decrease linear Y
+            linear_y_speed -= speed_increment
+            print("Linear Y speed: {:.2f} m/s".format(linear_y_speed))
+            twist.linear.y = linear_y_speed
+        elif key == 'q':  # Increase angular Z
+            angular_z_speed += speed_increment
+            print("Angular Z speed: {:.2f} rad/s".format(angular_z_speed))
+            twist.angular.z = angular_z_speed
+        elif key == 'e':  # Decrease angular Z
+            angular_z_speed -= speed_increment
+            print("Angular Z speed: {:.2f} rad/s".format(angular_z_speed))
+            twist.angular.z = angular_z_speed
+        elif key == ' ':  # Stop
+            linear_x_speed = 0.0
+            linear_y_speed = 0.0
+            angular_z_speed = 0.0
+            twist.linear.x = 0.0
+            twist.linear.y = 0.0
+            twist.angular.z = 0.0
+            print("Stopped")
+        elif key == 'i':  # Print current settings
+            print_instructions()
+            continue
         else:
-            return "Unknown command"
+            continue  # Unknown key, just continue
+        
+        # Publish velocity command
+        pub.publish(twist)
+        rate.sleep()
 
-    def get_key(self):
-        """Get a keypress from the terminal"""
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(sys.stdin.fileno())
-            ch = sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        return ch
-
-    def run(self):
-        """Main loop to get keypresses and update movement"""
-        try:
-            while not rospy.is_shutdown():
-                key = self.get_key()
-                
-                # Check for Ctrl+C (ASCII value 3)
-                if ord(key) == 3:
-                    self.running = False
-                    break
-                
-                message = self.process_key(key)
-                # Clear screen and reprint instructions (works in most terminals)
-                print("\033c", end="")
-                self.print_instructions()
-                print(f"Last command: {message}")
-                
-        except Exception as e:
-            print(e)
-        finally:
-            # Make sure to stop the robot before exiting
-            twist = Twist()
-            self.pub.publish(twist)
-            print("\nExiting teleop. Robot stopped.")
-
-if __name__ == '__main__':
-    teleop = TerminalTeleop()
-    teleop.run()
+if __name__ == "__main__":
+    try:
+        teleop()
+    except rospy.ROSInterruptException:
+        pass
