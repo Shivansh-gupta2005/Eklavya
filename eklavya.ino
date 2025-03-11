@@ -11,8 +11,6 @@
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/Quaternion.h>
 #include <geometry_msgs/TransformStamped.h>
-// #include <tf/tf.h>
-// #include <tf/transform_broadcaster.h>
 #include <LiquidCrystal_I2C.h>
 
 // Create interval timers
@@ -187,10 +185,10 @@ void encoderCallback() {
 
 
 
-// Convert encoder ticks to distance
-float ticksToDistance(int ticks) {
-    return (ticks * 2.0 * PI * WHEEL_RADIUS) / (ENCODER_PPR);
-}
+// // Convert encoder ticks to distance
+// float ticksToDistance(int ticks) {
+//     return (ticks * 2.0 * PI * WHEEL_RADIUS) / (ENCODER_PPR);
+// }
 
 // void updateOdometry() {
 //     unsigned long current_time = millis();
@@ -537,7 +535,7 @@ void cmdVelCallback(const geometry_msgs::Twist& twist_msg) {
   v1 = linear_x - angular_z * ROBOT_RADIUS; // Front Left
   v2 = linear_y + angular_z * ROBOT_RADIUS; // Front Right
   v3 = linear_x - angular_z * ROBOT_RADIUS; // Rear Left
-  v4 = - linear_y + angular_z * ROBOT_RADIUS; // Rear Right
+  v4 = linear_y - angular_z * ROBOT_RADIUS; // Rear Right
   
   // Convert velocity to PWM values
   int pwm1 = velocityToPWM(v1);
@@ -623,7 +621,7 @@ void setup() {
     calibrateSensors();
     lastUpdate = micros();
     
-       encoderTimer.begin(encoderCallback, 100000);  // 100ms = 10Hz for encoders
+    encoderTimer.begin(encoderCallback, 100000);  // 100ms = 10Hz for encoders
     imuTimer.begin(imuCallback, 10000);   
     gpsTimer.begin(gpsCallback, 10);        // 10ms = 100Hz for IMU
 }
