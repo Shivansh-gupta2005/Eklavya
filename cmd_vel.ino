@@ -10,17 +10,17 @@
 // #define ENCODER3_PIN_B 5
 // #define ENCODER4_PIN_A 16
 // #define ENCODER4_PIN_B 17
-#define DIR1 9
-#define PWM1 8
+#define DIR1 20
+#define PWM1 22
 #define DIR2 7
 #define PWM2 6
-#define DIR3 14
-#define PWM3 15
-#define DIR4 20
-#define PWM4 22
+#define DIR3 9
+#define PWM3 8
+#define DIR4 14
+#define PWM4 15
 // Bot parameters (adjust based on your robot dimensions)
 #define WHEEL_RADIUS 0.076 // meters
-#define ROBOT_RADIUS 0.29 // meters (distance from center to wheel)
+#define ROBOT_RADIUS 0.268 // meters (distance from center to wheel)
 #define MAX_PWM 255
 #define MAX_RPM 128 // Maximum RPM your motors can achieve
 // RPM to PWM conversion parameters (rpm = 0.5119*pwm - 3.10)
@@ -147,9 +147,9 @@ float linear_y = twist.linear.y; // Left/right movement
 float angular_z = twist.angular.z; // Rotation
  // 1: Front Left, 2: Front Right, 3: Rear Left, 4: Rear Right
  v1 = linear_x - angular_z * ROBOT_RADIUS; // Front Left
- v2 = linear_y + angular_z * ROBOT_RADIUS; // Front Right
- v3 = linear_x - angular_z * ROBOT_RADIUS; // Rear Left
- v4 = - linear_y + angular_z * ROBOT_RADIUS; // Rear Right
+ v2 = linear_y - angular_z * ROBOT_RADIUS; // Front Right
+ v3 = linear_x + angular_z * ROBOT_RADIUS; // Rear Left
+ v4 = linear_y + angular_z * ROBOT_RADIUS; // Rear Right
  // Normalize velocities if any exceeds maximum
 applyWheelVelocities();
 }
