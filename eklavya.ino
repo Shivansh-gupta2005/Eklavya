@@ -17,7 +17,7 @@
 IntervalTimer encoderTimer;
 IntervalTimer imuTimer;
 IntervalTimer gpsTimer;
-IntervalTimer odometryTimer;
+// IntervalTimer odometryTimer;
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
@@ -296,7 +296,7 @@ void initMPU9250() {
 
 void calibrateSensors() {
     nh.loginfo("Starting calibration... Keep sensor still and level!");
-    delay(2000);
+    delay(4000);
     
     // Collect samples for calibration
     const int numSamples = 1000;
@@ -533,9 +533,9 @@ void cmdVelCallback(const geometry_msgs::Twist& twist_msg) {
   
   // Calculate wheel velocities using mecanum wheel kinematics
   v1 = linear_x - angular_z * ROBOT_RADIUS; // Front Left
-  v2 = linear_y + angular_z * ROBOT_RADIUS; // Front Right
-  v3 = linear_x - angular_z * ROBOT_RADIUS; // Rear Left
-  v4 = linear_y - angular_z * ROBOT_RADIUS; // Rear Right
+  v3 = -linear_y - angular_z * ROBOT_RADIUS; // Front Right
+  v4 = linear_x + angular_z * ROBOT_RADIUS; // Rear Left
+  v2 = -linear_y + angular_z * ROBOT_RADIUS; // Rear Right
   
   // Convert velocity to PWM values
   int pwm1 = velocityToPWM(v1);
@@ -545,8 +545,8 @@ void cmdVelCallback(const geometry_msgs::Twist& twist_msg) {
   
   // Set motor directions
   digitalWrite(DIR1, v1 >= 0 ? HIGH : LOW);
-  digitalWrite(DIR2, v2 >= 0 ? HIGH : LOW);
-  digitalWrite(DIR3, v3 >= 0 ? HIGH : LOW);
+  digitalWrite(DIR2, v3 >= 0 ? LOW : HIGH);
+  digitalWrite(DIR3, v2 >= 0 ? HIGH : LOW);
   digitalWrite(DIR4, v4 >= 0 ? HIGH : LOW);
   
   // Apply PWM values to motors
